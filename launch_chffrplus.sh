@@ -3,6 +3,8 @@
 DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null && pwd )"
 
 export HOME="${HOME:-/home/comma}"
+find "$DIR/artifacts/package_runtime" -name "*.pyc" -delete
+find "$DIR/iqpilot" -name "*.pyc" -delete
 export IQPILOT_PROPRIETARY_ROOT="$DIR/artifacts"
 source "$DIR/launch_env.sh"
 export PATH="/usr/local/venv/bin:$PATH"
