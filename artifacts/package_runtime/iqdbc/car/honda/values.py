@@ -73,6 +73,10 @@ class HondaFlags(IntFlag):
   NIDEC_ALT_SCM_MESSAGES = 64
 
   BOSCH_CANFD = 128
+  VGR_CLARITY_TRW_A020 = 32768
+  VGR_CIVIC_TBA_C020 = 65536
+  VGR_INSIGHT_TXM_A040 = 131072
+
 
   HAS_ALL_DOOR_STATES = 256  # Some Hondas have all door states, others only driver door
   BOSCH_ALT_RADAR = 512
