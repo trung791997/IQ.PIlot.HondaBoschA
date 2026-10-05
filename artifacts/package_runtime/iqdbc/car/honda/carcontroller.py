@@ -237,13 +237,13 @@ class CarController(CarControllerBase, AolCarController, GasInterceptorCarContro
     else:
       accel = 0.0
       gas, brake = 0.0, 0.0
-
-
+    # actuators comes from carControl, a read-only capnp message on the device: never assign into it
+    torque_cmd = float(actuators.torque)
     if self.vfn_override:
-      actuators.torque = self.apply_vfn_override(CC, CS, float(actuators.torque))
+      torque_cmd = self.apply_vfn_override(CC, CS, torque_cmd)
 
     # *** rate limit steer ***
-    limited_torque = rate_limit(actuators.torque, self.last_torque, -self.params.STEER_DELTA_DOWN * DT_CTRL,
+    limited_torque = rate_limit(torque_cmd, self.last_torque, -self.params.STEER_DELTA_DOWN * DT_CTRL,
                                 self.params.STEER_DELTA_UP * DT_CTRL)
     self.last_torque = limited_torque
 
