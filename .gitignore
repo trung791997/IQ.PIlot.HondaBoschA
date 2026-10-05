@@ -47,9 +47,6 @@ a.out
 *.o-*
 *.os
 *.os-*
-*.so
-!artifacts/iqpilot_*_private/**/*.so
-!artifacts/runtime/ble/rootfs/usr/local/venv/**/*.so
 artifacts/iqpilot_private/
 artifacts/iqpilot_*_private/python/iqpilot_private/**/*.cpython-*-darwin.so
 artifacts/test-results/
@@ -180,3 +177,4 @@ iqpilot/tools/iqpilot/big_hud_preview.py
 artifacts/monrovia_runtime_packages/
 artifacts/iqpilot_*_private/consumer.challenge
 /docs/
+!*.so
