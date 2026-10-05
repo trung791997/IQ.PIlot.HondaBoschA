@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import capnp
-from cereal import messaging, log, car, custom
+from iqpilot.cereal import messaging, log, car, custom
 from iqpilot.common.filter_simple import FirstOrderFilter
 from iqpilot.common.params import Params
 from iqpilot.common.realtime import DT_MDL, Priority, config_realtime_process

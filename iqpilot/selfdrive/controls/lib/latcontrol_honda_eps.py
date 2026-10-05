@@ -26,7 +26,7 @@ from collections import deque
 
 import numpy as np
 
-from cereal import custom, log
+from iqpilot.cereal import custom, log
 from iqdbc.car.honda.carcontroller import get_eps_modified_steering_pressed
 from iqdbc.car.honda.steer_ratio import get_honda_vgr_inverse, vgr_linear_to_physical
 from iqdbc.car.honda.values import CAR as HONDA, HondaFlags
