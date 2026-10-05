@@ -93,6 +93,28 @@ def process_hud_alert(hud_alert):
   return alert_fcw, alert_steer_required
 
 
+
+def get_eps_modified_steering_pressed(
+  raw_pressed: bool,
+  sensor_torque: float,
+  torque_cmd: float,
+  filter_s: float,
+  robust_prev: bool,
+) -> tuple[float, bool]:
+  import math
+  from iqpilot.common.realtime import DT_CTRL
+  # simplified VFN override detector
+  if raw_pressed:
+    if torque_cmd * sensor_torque < 0.0 or abs(torque_cmd) < 0.1:
+      filter_s = 0.28
+    else:
+      filter_s = min(0.28, filter_s + DT_CTRL)
+  else:
+    filter_s = 0.0
+
+  return filter_s, (filter_s >= 0.28)
+
+
 class CarController(CarControllerBase, AolCarController, GasInterceptorCarController):
   def __init__(self, dbc_names, CP, CP_IQ):
     CarControllerBase.__init__(self, dbc_names, CP, CP_IQ)
@@ -100,6 +122,11 @@ class CarController(CarControllerBase, AolCarController, GasInterceptorCarContro
     GasInterceptorCarController.__init__(self, CP, CP_IQ)
     self.packer = CANPacker(dbc_names[Bus.pt])
     self.params = CarControllerParams(CP)
+
+    self.steering_pressed_filter_s = 0.0
+    self.steering_pressed_robust_prev = False
+    self.override_ramp = 1.0
+    self.lat_active_prev = False
     self.CAN = hondacan.CanBus(CP)
     self.tja_control = CP.carFingerprint in HONDA_BOSCH_TJA_CONTROL
 
