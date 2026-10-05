@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Shared env for the on-device diagnostics: reuse the running manager's interpreter/env if found,
 # otherwise rebuild the environment exactly the way launch_chffrplus.sh does for a prebuilt tree.
-DIR=/data/openpilot
+DIR=$(readlink -f /data/openpilot 2>/dev/null || echo /data/openpilot)  # /data/openpilot may be a symlink to /data/iqpilot
 PY=""
 for pid in $(pgrep -f "manager.py"); do
-  if [ "$(readlink /proc/$pid/cwd)" = "$DIR/iqpilot/system/manager" ]; then
+  if [ "$(readlink -f /proc/$pid/cwd)" = "$DIR/iqpilot/system/manager" ]; then
     PY=$(readlink /proc/$pid/exe)
     while IFS= read -r -d '' kv; do
       case "$kv" in PYTHONPATH=*|PYTHONSAFEPATH=*|IQPILOT_*=*|AGNOS_VERSION=*|QCOM_*=*) export "$kv";; esac
