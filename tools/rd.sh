@@ -1,15 +1,7 @@
 #!/usr/bin/env bash
 # One-screen relay-malfunction diagnostic. Run on the device: bash /data/openpilot/tools/relay_diag.sh
 # Borrows the running manager's interpreter and PYTHONPATH so it sees exactly what the processes see.
-PID=$(pgrep -f "system/manager/manager.py" | head -1)
-if [ -n "$PID" ]; then
-  PY=$(readlink /proc/$PID/exe)
-  export $(tr '\0' '\n' < /proc/$PID/environ | grep -E '^PYTHONPATH=')
-else
-  PY=/usr/local/venv/bin/python3
-  export PYTHONPATH=/data/openpilot/artifacts/package_runtime:/data/openpilot
-fi
-cd /data/openpilot || exit 1
+source "$(dirname "$(readlink -f "$0")")/diag_env.sh"
 echo "OS: $(cat /VERSION)  git: $(git log --oneline -1 | cut -c1-40)"
 exec "$PY" - <<'EOF'
 import time, glob, os, re
