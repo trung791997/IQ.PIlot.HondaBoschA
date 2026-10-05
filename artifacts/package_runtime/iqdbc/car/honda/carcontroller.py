@@ -39,6 +39,23 @@ def compute_gas_brake(accel, speed, fingerprint):
     return compute_gb_honda_nidec(accel, speed)
 
 
+# Civic Bosch over-brake compensation, mid band only (StarPilot carcontroller.py; report §12.3 P4; STATUS 204). VSA
+# report (tools/longitudinal/bosch_vsa_accel_report.py), delivered - commanded aEgo at t+0.35 s, medians:
+#   route 0000026b: -1.0..-1.5 -0.06, -1.5..-2.0 -0.13, -2.0..-2.5 -0.26, -2.5..-3.0 -0.54
+#   route 00000268: -1.0..-1.5 -0.04, -1.5..-2.0 -0.06, -2.0..-2.5 +0.15, -2.5..-3.0 +0.13
+# The two routes disagree above -2.0, so the offset is small (+0.15 peak, about a quarter of the worst median) and
+# zero at both ends. Never applied at or below -3.0 (saturated/emergency commands: never weaken those) nor while
+# stopping. Owner, 2026-10-04: ship baked in. Log evidence only; not driven on IQ.Pilot.
+BOSCH_OVERBRAKE_COMP_BP = [-3.0, -2.5, -2.0, -1.0]
+BOSCH_OVERBRAKE_COMP_V = [0.0, 0.15, 0.10, 0.0]
+
+
+def bosch_overbrake_compensation(accel: float, stopping: bool) -> float:
+  if stopping or not (BOSCH_OVERBRAKE_COMP_BP[0] < accel < BOSCH_OVERBRAKE_COMP_BP[-1]):
+    return 0.0
+  return float(np.interp(accel, BOSCH_OVERBRAKE_COMP_BP, BOSCH_OVERBRAKE_COMP_V))
+
+
 # TODO not clear this does anything useful
 def actuator_hysteresis(brake, braking, brake_steady, v_ego, car_fingerprint):
   # hyst params
@@ -379,6 +396,8 @@ class CarController(CarControllerBase, AolCarController, GasInterceptorCarContro
               self.brake_pid.reset()
             target_accel = min(accel, accel + self.brake_pid.i)
 
+          if self.CP.carFingerprint == CAR.HONDA_CIVIC_BOSCH:
+            target_accel += bosch_overbrake_compensation(accel, actuators.longControlState == LongCtrlState.stopping)
           self.accel = float(np.clip(target_accel, self.params.BOSCH_ACCEL_MIN, self.params.BOSCH_ACCEL_MAX))
           # not using self.accel since the brake pid resets with the gas pedal
           gas_pedal_force = accel + wind_brake_ms2 * self.windfactor + hill_brake

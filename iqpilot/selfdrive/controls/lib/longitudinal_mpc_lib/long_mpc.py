@@ -58,6 +58,64 @@ MIN_X_LEAD_FACTOR = 0.5
 LEAD_PULLAWAY_VREL = 0.5
 LEAD_PULLAWAY_ABRAKE = -0.5
 
+# HumanFollowing (StarPilot long_mpc.py build_model_lead_trajectory, always on there; FrogPilot-Testing 728f65472):
+# the lead path is the radar dRel/vLead anchor plus the model's future deltas whenever the model lead prob exceeds
+# LeadDetectionThreshold (StarPilot default 35%), bounded by the distance the lead's speed can cover. StarPilot's one
+# addition: an urgent-closing fallback to the raw aLeadK extrapolation below a 2.0 s closing TTC (owner, 2026-09-28,
+# after a 3.0/2.5/2.0/1.5/1.0 s replay sweep). Replaces IQ.Pilot's newLeadMpc path while on. Replay evidence only.
+HUMAN_FOLLOWING = True
+HUMAN_FOLLOWING_LEAD_PROB = 0.35
+MODEL_LEAD_TRAJECTORY_MAX_CLOSING_TTC = 2.0  # s
+MODEL_LEAD_TRAJECTORY_MIN_CLOSING_SPEED = 0.75  # m/s
+
+
+def build_model_lead_trajectory(model_lead, radar_lead, v_ego, lead_detection_probability=HUMAN_FOLLOWING_LEAD_PROB):
+  """StarPilot/FrogPilot HumanFollowing lead path. None means: use the radar extrapolation instead."""
+  if model_lead is None or radar_lead is None or not bool(getattr(radar_lead, "status", False)):
+    return None
+
+  try:
+    if not float(model_lead.prob) > float(lead_detection_probability):
+      return None
+    model_x = np.asarray(model_lead.x, dtype=np.float64)
+    model_v = np.asarray(model_lead.v, dtype=np.float64)
+  except (AttributeError, TypeError, ValueError):
+    return None
+
+  if model_x.shape != LEAD_T_IDXS_MODEL.shape or model_v.shape != LEAD_T_IDXS_MODEL.shape:
+    return None
+  if not np.all(np.isfinite(model_x)) or not np.all(np.isfinite(model_v)):
+    return None
+
+  raw_d_rel = float(getattr(radar_lead, "dRel", float("nan")))
+  raw_v_lead = float(getattr(radar_lead, "vLead", float("nan")))
+  if not np.isfinite(raw_d_rel) or not np.isfinite(raw_v_lead):
+    return None
+
+  # urgent closing: hand the lead back to the raw aLeadK extrapolation
+  closing = float(v_ego) - raw_v_lead
+  if closing > MODEL_LEAD_TRAJECTORY_MIN_CLOSING_SPEED and raw_d_rel / closing < MODEL_LEAD_TRAJECTORY_MAX_CLOSING_TTC:
+    return None
+
+  # the model contributes future deltas only; the current lead distance and speed stay the anchor
+  x_lead_traj = raw_d_rel + (model_x - model_x[0])
+  v_lead_traj = raw_v_lead + (model_v - model_v[0])
+
+  # MPC will not converge if an immediate crash is expected: clip the lead distance to what is still brakeable
+  v_ego = float(v_ego)
+  v_lead_0 = v_lead_traj[0]
+  min_x_lead = MIN_X_LEAD_FACTOR * (v_ego + v_lead_0) * (v_ego - v_lead_0) / (-ACCEL_MIN * 2)
+  x_lead_traj[0] = max(x_lead_traj[0], min_x_lead)
+  v_lead_traj = np.clip(v_lead_traj, 0.0, 1e8)
+
+  x_lead_mpc = np.maximum.accumulate(np.interp(T_IDXS, LEAD_T_IDXS_MODEL, x_lead_traj))
+  v_lead_mpc = np.interp(T_IDXS, LEAD_T_IDXS_MODEL, v_lead_traj)
+
+  # forward movement cannot exceed the distance covered by the corrected speed
+  x_lead_max = x_lead_mpc[0] + np.cumsum(T_DIFFS[1:] * (v_lead_mpc[:-1] + v_lead_mpc[1:]) / 2)
+  x_lead_mpc[1:] = np.minimum(x_lead_mpc[1:], x_lead_max)
+  return np.column_stack((x_lead_mpc, v_lead_mpc))
+
 def get_jerk_factor(personality=log.LongitudinalPersonality.standard):
   if personality==log.LongitudinalPersonality.relaxed:
     return 1.0
@@ -277,6 +335,10 @@ class LongitudinalMpc:
     lead_xv = self.extrapolate_lead(x_lead, v_lead, a_lead, a_lead_tau)
     return lead_xv
 
+  def process_lead_human_following(self, model_lead, radar_lead):
+    lead_xv = build_model_lead_trajectory(model_lead, radar_lead, self.x0[1])
+    return lead_xv if lead_xv is not None else self.process_lead_legacy(radar_lead)
+
   def process_lead(self, model_lead, radar_lead):
     v_ego = self.x0[1]
     try:
@@ -321,7 +383,13 @@ class LongitudinalMpc:
     t_follow = get_T_FOLLOW(personality)
     model_leads = modelV2.leadsV3
 
-    if self.new_lead_mpc:
+    if HUMAN_FOLLOWING:
+      self.status = radarstate.leadOne.status or radarstate.leadTwo.status
+      model_lead_0 = model_leads[0] if len(model_leads) > 0 else None
+      model_lead_1 = model_leads[1] if len(model_leads) > 1 else None
+      lead_xv_0 = self.process_lead_human_following(model_lead_0, radarstate.leadOne)
+      lead_xv_1 = self.process_lead_human_following(model_lead_1, radarstate.leadTwo)
+    elif self.new_lead_mpc:
       self.status = radarstate.leadOne.status or radarstate.leadTwo.status
       model_lead_0 = model_leads[0] if len(model_leads) > 0 else None
       model_lead_1 = model_leads[1] if len(model_leads) > 1 else None
