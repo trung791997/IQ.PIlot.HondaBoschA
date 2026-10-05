@@ -7,7 +7,6 @@ from iqdbc.car.interfaces import ACCEL_MIN, ACCEL_MAX
 from iqpilot.common.constants import CV
 from iqpilot.common.filter_simple import FirstOrderFilter
 from iqpilot.common.params import Params, UnknownKeyName
-from iqpilot.common.params_extra import get_extra_bool
 from iqpilot.common.realtime import DT_MDL
 from iqpilot.selfdrive.iqmodeld.config import ModelConstants
 from iqpilot.selfdrive.controls.lib.longcontrol import LongCtrlState
@@ -136,6 +135,7 @@ def get_accel_candidates(e2e, has_lead, mpc_candidate, cruise_candidate, e2e_can
 
 
 
+STOCK_BRAKE_FEEL = True
 STOCK_FEEL_DEPTH_BP = [2.0, 2.25, 2.75, 3.5, 4.5, 5.5, 6.5, 7.5, 9.0, 11.0, 13.5, 17.5, 25.0]  # s
 STOCK_FEEL_DEPTH_V = [-3.5, -3.2, -2.4, -2.3, -2.3, -2.1, -1.7, -1.6, -1.28, -1.09, -0.88, -0.74, -0.35]  # m/s^2
 STOCK_FEEL_JERK_BP = [2.0, 2.5, 6.0, 10.0]  # s
@@ -244,8 +244,8 @@ class LongitudinalPlanner(LongitudinalPlannerIQ):
     except UnknownKeyName:
       distance_control_enabled = False
     self.distance_control = E2EDistanceController(distance_control_enabled, dt)
-    # D-086 StockBrakeFeel (StarPilot, off by default). Not in the checked-in params library; read once per drive.
-    self.stock_brake_feel = get_extra_bool("StockBrakeFeel")
+    # D-086 StockBrakeFeel: StarPilot's toggle (default off there), baked in on here (owner, 2026-10-05)
+    self.stock_brake_feel = STOCK_BRAKE_FEEL
     self.brake_release_rise_ticks = BRAKE_RELEASE_DWELL_TICKS + 1
     try:
       accel_boost_enabled = Params().get_bool("IQGasOverrideBoost")

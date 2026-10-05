@@ -74,33 +74,15 @@ BOSCH_A_FREQ_HZ = 14.35
 BOSCH_A_RANGE_SCALE_M = 1.0 / 16.0
 
 # Offset. The firmware term is -n/128, where n is assembled from a configuration word plus a
-# runtime addend and is therefore a PER-UNIT CALIBRATION VALUE, not a constant; 335 (-2.617 m) is
-# only the fallback the firmware uses when the config word reads zero. -3.0 is retained because it
-# sits inside the plausible calibration range and the choice barely moves the residual. Do not
-# re-fit this against vision: read it from the radar's own configuration instead.
-BOSCH_A_RANGE_OFFSET_M = -3.0
-# D-076, BoschARangeOffsetFallback (TEST, default OFF; owner decision 2026-10-03). ON uses the firmware's own fallback
-# offset, -335/128 = -2.6171875 m, instead of -3.0: every published dRel reads 0.3828125 m (6.125 range counts) LONGER.
-# Range differences, vRel and U11 are unchanged. Neither value is measured for this car: -3.0 is n = 384 (decoder
-# choice), -2.617 is n = 335 (used only when the config word reads zero). Longer dRel is the less conservative
-# direction, which is why it ships OFF. Static only; no road evidence. The laser range check settles the true n.
-BOSCH_A_RANGE_OFFSET_FALLBACK_M = -335.0 / 128.0
-BOSCH_A_RANGE_OFFSET_FALLBACK_PARAM = "BoschARangeOffsetFallback"
+# runtime addend and is therefore a PER-UNIT CALIBRATION VALUE, not a constant; 335 is the fallback
+# the firmware uses when the config word reads zero. Do not re-fit this against vision: read it from
+# the radar's own configuration instead.
+# D-076, baked in here (owner, 2026-10-05): the firmware's own fallback, -335/128 = -2.6171875 m. StarPilot ships -3.0
+# (n = 384, a decoder choice) with this as the default-off BoschARangeOffsetFallback toggle; against -3.0 every dRel
+# reads 0.3828125 m (6.125 range counts) LONGER, the less conservative direction. Range differences, vRel and U11 are
+# unchanged. Neither value is measured for this car; the laser range check settles the true n. Static only.
+BOSCH_A_RANGE_OFFSET_M = -335.0 / 128.0
 
-
-def bosch_a_range_offset_m(fallback: bool) -> float:
-  """D-076: the range offset the toggle selects. OFF returns BOSCH_A_RANGE_OFFSET_M itself."""
-  return BOSCH_A_RANGE_OFFSET_FALLBACK_M if fallback else BOSCH_A_RANGE_OFFSET_M
-
-
-def bosch_a_range_offset_fallback_enabled() -> bool:
-  """BoschARangeOffsetFallback, read once at startup the way interface.py reads BoschARadar. Any failure, including
-  a params_pyx.so that predates the key, means OFF: -3.0."""
-  try:
-    from iqpilot.common.params_extra import get_extra_bool
-    return get_extra_bool(BOSCH_A_RANGE_OFFSET_FALLBACK_PARAM)
-  except Exception:
-    return False
 
 # Azimuth: f0 raw_angle (11-bit, B4:B5 high 3 bits), offset-binary about 1024.
 #
@@ -169,7 +151,7 @@ BOSCH_A_DIRECT_VREL_CENTER_RAW = 864
 #     STATUS 7 src 2 U10<64, 55.7-70.0) bracket about 55-70 counts per m/s, which excludes 72; Job's per-dRel-band
 #     range check (D-074 second addendum) depends on the band, column A running 66.8-77.0, so the result is band-
 #     dependent rather than a clean exclusion. The encoder is firmware-proven 1/72 and the range scale is firmware-
-#     proven raw/16 (R18); the range offset (BOSCH_A_RANGE_OFFSET_M, -3.0) is a constant and does not change a range
+#     proven raw/16 (R18); the range offset (BOSCH_A_RANGE_OFFSET_M, -2.6171875) is a constant and does not change a range
 #     slope. So this reads as a range-vs-U11 discrepancy (the range slope runs faster than U11), not a decode
 #     error. Unresolved; see STATUS. No closing-speed figure here is road-validated.
 # Centre 864, rails raw 0/1728, sentinel 0x7FE, u10, range and azimuth are unchanged. 1/72 publishes 64/72 of the
@@ -706,8 +688,8 @@ class RadarInterface(RadarInterfaceBase):
       # D-074: U11 counts per m/s (72). An attribute so replays of 1/64-era logs can set it.
       self.u11_counts_per_mps = BOSCH_A_DIRECT_VREL_COUNTS_PER_MPS
       self.newborn_range_publish = BOSCH_A_NEWBORN_RANGE_PUBLISH
-      # D-076: range offset, -3.0 unless BoschARangeOffsetFallback is on. Read once; a restart is needed.
-      self.range_offset_m = bosch_a_range_offset_m(bosch_a_range_offset_fallback_enabled())
+      # D-076: -2.6171875 m. An attribute so replays and tests can set another offset.
+      self.range_offset_m = BOSCH_A_RANGE_OFFSET_M
     else:
       # Nidec
       self.rcp = _create_nidec_can_parser(CP.carFingerprint)

@@ -1,14 +1,12 @@
 """Helpers LatControlHondaEps (latcontrol_honda_eps.py) shares with StarPilot's Honda LatControlPID.
 
 Ported from StarPilot ns-bosch-radar-testing selfdrive/controls/lib/latcontrol_pid.py: only the pieces the EPS
-controller uses (road-measured steer-ratio curves, the desired-angle slew ceiling and settings reads). IQ.Pilot keeps
+controller uses (road-measured steer-ratio curves and the desired-angle slew ceiling). IQ.Pilot keeps
 its own LatControlPID (latcontrol_pid.py) for every other car.
 """
 import math
 
 import numpy as np
-
-from iqpilot.common.params_extra import get_extra_bool, get_extra_float
 
 
 # nrdr: the Clarity's Nidec rack is variable-ratio, but paramsd learns ONE steerRatio.
@@ -162,17 +160,3 @@ def rate_limit_desired_angle(angle_deg: float, prev_angle_deg: float, max_rate_d
     return angle_deg
   max_delta = max_rate_deg_s * dt
   return float(min(max(angle_deg, prev_angle_deg - max_delta), prev_angle_deg + max_delta))
-
-
-def _get_param_float(params, key, default, min_value=None, max_value=None, scale=1.0):
-  # params is unused: these keys are not in the checked-in params library (see iqpilot/common/params_extra.py)
-  ret = get_extra_float(key, default) / scale
-  if min_value is not None:
-    ret = max(min_value, ret)
-  if max_value is not None:
-    ret = min(max_value, ret)
-  return ret
-
-
-def _get_param_bool(params, key, default=False):
-  return get_extra_bool(key, default)

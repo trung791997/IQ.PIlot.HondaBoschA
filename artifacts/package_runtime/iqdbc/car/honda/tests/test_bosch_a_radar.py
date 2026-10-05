@@ -37,30 +37,11 @@ from iqdbc.car.honda.radar_interface import (
   _bosch_a_main_base,
   _bosch_a_range_ratio,
   _bosch_a_range_ratio_vrel,
-  bosch_a_range_offset_m,
 )
-import iqdbc.car.honda.radar_interface as radar_interface_module
 from iqdbc.car.honda.values import CAR
-from iqpilot.common.params import Params
 
-# Tester toggle: CP is computed once at import time below (many helpers in this module close over
-# it), which runs before any pytest fixture could -- so this has to be plain top-level code, not a
-# fixture. teardown_module() restores it once every test in this file has run (mirrors
-# gm/tests/test_gm.py's put_bool/finally pattern for params-gated _get_params behavior).
-
-
-def teardown_module(module):
-  pass
-
-
-@pytest.fixture(autouse=True)
-def _range_offset_fallback_off(request, monkeypatch):
-  # The decode tests are written against BOSCH_A_RANGE_OFFSET_M (-3.0). IQ.Pilot turns the -2.617 m fallback on by
-  # default (iqpilot/common/params_extra.py), so pin it off here except where the default itself is under test.
-  if request.node.name != "test_default_on_without_the_key":
-    monkeypatch.setattr(radar_interface_module, "bosch_a_range_offset_fallback_enabled", lambda: False)
-
-
+# Ported from StarPilot opendbc/car/honda/tests. IQ.Pilot needs no BoschARadar toggle: Civic Bosch is in
+# HONDA_RADAR_SCAN_VERIFIED, so the decoder is on.
 CP = CarInterface.get_non_essential_params(CAR.HONDA_CIVIC_BOSCH)
 BUS = CanBus(CP).camera
 
@@ -713,51 +694,19 @@ class TestU11Scale72:
     assert _bosch_a_direct_vrel_interval(inside) == (inside, inside)
 
 
-class TestRangeOffsetFallback:
-  """D-076 BoschARangeOffsetFallback: OFF is -3.0 exactly; ON is the firmware fallback -335/128, nothing else moves."""
+class TestRangeOffset:
+  """D-076, baked in: the firmware fallback -335/128 m, nothing else moves."""
 
-  @staticmethod
-  def _dRel(ri, raw_range=1000):
-    ri.update(sweep(0, 0, 0x7, raw_range, 1024, 1, 0))
-    rr = ri.update(sweep(0, 1, 0x7, raw_range, 1024, 3, 50_000_000, with_aux=True,
+  def test_constant(self):
+    assert BOSCH_A_RANGE_OFFSET_M == -2.6171875
+
+  def test_dRel_uses_it(self):
+    ri = make_radar_interface()
+    assert ri.range_offset_m == BOSCH_A_RANGE_OFFSET_M
+    ri.update(sweep(0, 0, 0x7, 1000, 1024, 1, 0))
+    rr = ri.update(sweep(0, 1, 0x7, 1000, 1024, 3, 50_000_000, with_aux=True,
                          direct_vrel_raw=864, direct_vrel_uncertainty_raw=0))
-    return rr.points[0]
-
-  def test_selector(self):
-    assert bosch_a_range_offset_m(False) is BOSCH_A_RANGE_OFFSET_M
-    assert bosch_a_range_offset_m(True) == -2.6171875
-    assert bosch_a_range_offset_m(True) - bosch_a_range_offset_m(False) == 0.3828125
-
-  def test_default_on_without_the_key(self):
-    # IQ.Pilot: BoschARangeOffsetFallback defaults ON (iqpilot/common/params_extra.py); StarPilot's default is off
-    ri = make_radar_interface()  # this test's params store has no BoschARangeOffsetFallback set
-    assert ri.range_offset_m == -2.6171875
-    assert self._dRel(ri).dRel == pytest.approx(1000 / 16 - 2.6171875)
-
-  def test_off_is_minus_three(self, monkeypatch):
-    monkeypatch.setattr(radar_interface_module, "bosch_a_range_offset_fallback_enabled", lambda: False)
-    ri = make_radar_interface()
-    assert ri.range_offset_m is BOSCH_A_RANGE_OFFSET_M
-    assert self._dRel(ri).dRel == pytest.approx(1000 / 16 - 3.0)
-
-  def test_on_shifts_dRel_only(self, monkeypatch):
-    monkeypatch.setattr(radar_interface_module, "bosch_a_range_offset_fallback_enabled", lambda: False)
-    off = self._dRel(make_radar_interface())
-    monkeypatch.setattr(radar_interface_module, "bosch_a_range_offset_fallback_enabled", lambda: True)
-    ri = make_radar_interface()
-    assert ri.range_offset_m == -2.6171875
-    on = self._dRel(ri)
-    assert on.dRel == pytest.approx(1000 / 16 - 2.6171875)
-    assert on.dRel - off.dRel == pytest.approx(0.3828125)
-    assert (on.vRel, on.yRel / on.dRel) == pytest.approx((off.vRel, off.yRel / off.dRel))
-
-  def test_reader_fails_closed(self, monkeypatch):
-    import iqpilot.common.params_extra as params_extra_module
-
-    def broken(key, default=None):
-      raise RuntimeError("unknown key")
-    monkeypatch.setattr(params_extra_module, "get_extra_bool", broken)
-    assert radar_interface_module.bosch_a_range_offset_fallback_enabled() is False
+    assert rr.points[0].dRel == pytest.approx(1000 / 16 - 2.6171875)
 
 
 class TestVrel:
@@ -2196,7 +2145,7 @@ class TestNcFields:
     rr = None
     for i in range(n):
       raw = start_raw - 20 * i   # 17.9 m/s, past the rail, so the D-043 check keeps the sweep measured
-      d_rel = raw / 16.0 - 3.0
+      d_rel = raw / 16.0 + BOSCH_A_RANGE_OFFSET_M
       raw_nc = self._nc_raw(d_rel, nc_vrel) if nc_raw is None else nc_raw
       rr = ri.update(sweep(0, i & 0xF, 0x7, raw, 1024, 1 + 2 * i, i * self.DT_NS, with_aux=True,
                            direct_vrel_raw=BOSCH_A_DIRECT_VREL_MIN_RAW, direct_vrel_uncertainty_raw=90,
@@ -2246,11 +2195,11 @@ class TestNcFields:
     for i, raw in enumerate((500, 510, 520, 530)):
       rr = ri.update(sweep(0, i, 0x7, raw, 1024, 1 + 2 * i, i * self.DT_NS, with_aux=True,
                            direct_vrel_raw=864 + 40, direct_vrel_uncertainty_raw=0,
-                           nc_raw=self._nc_raw(raw / 16.0 - 3.0, -2.0)))
+                           nc_raw=self._nc_raw(raw / 16.0 + BOSCH_A_RANGE_OFFSET_M, -2.0)))
     assert rr.points[0].measured and rr.points[0].ncValid, "the control sweep must carry a valid NC"
     rr = ri.update(sweep(0, 4, 0x7, 540, 1024, 9, 4 * self.DT_NS, with_aux=True,
                          direct_vrel_raw=864 - 11 * 72, direct_vrel_uncertainty_raw=0,
-                         nc_raw=self._nc_raw(540 / 16.0 - 3.0, -2.0)))
+                         nc_raw=self._nc_raw(540 / 16.0 + BOSCH_A_RANGE_OFFSET_M, -2.0)))
     assert len(rr.points) == 1
     assert not rr.points[0].measured
     assert not rr.points[0].ncValid
@@ -2258,7 +2207,7 @@ class TestNcFields:
   def test_range_rejected_coast_is_invalid(self):
     # test_discontinuous_range_coasts_last_accepted_point_unmeasured's shape, with a valid NC throughout.
     ri = make_radar_interface()
-    nc = self._nc_raw(500 / 16.0 - 3.0, -2.0)
+    nc = self._nc_raw(500 / 16.0 + BOSCH_A_RANGE_OFFSET_M, -2.0)
     ri.update(sweep(0, 0, 0x7, 500, 1024, 1, 0, with_aux=True,
                     direct_vrel_raw=864, direct_vrel_uncertainty_raw=80, rawca=500, nc_raw=nc))
     rr = ri.update(sweep(0, 1, 0x7, 510, 1024, 3, 50_000_000, with_aux=True,
@@ -2294,7 +2243,7 @@ class TestNcAtRail:
     out = []
     for i in range(n):
       raw = start_raw - self.STEP_RAW * i
-      d_rel = raw / 16.0 - 3.0
+      d_rel = raw / 16.0 + BOSCH_A_RANGE_OFFSET_M
       nc_raw = nc(i, d_rel)
       rr = ri.update(sweep(0, i & 0xF, 0x7, raw, angle_raw, 1 + 2 * i, i * self.DT_NS, with_aux=True,
                            direct_vrel_raw=BOSCH_A_DIRECT_VREL_MIN_RAW, direct_vrel_uncertainty_raw=90,

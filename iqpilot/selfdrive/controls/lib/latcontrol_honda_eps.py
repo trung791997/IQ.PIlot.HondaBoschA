@@ -1,9 +1,9 @@
 """nrdr: lateral controller for the Honda Clarity and Civic Bosch with a modified EPS. controlsd selects it instead of
-LatControlPID when NrdrLatEpsFirmwareFF is on (read once, when controlsd starts). Named LatControlClarityEps /
-latcontrol_clarity_eps.py until it ran on more than the Clarity.
+LatControlPID on every modified-EPS Clarity and Civic Bosch (StarPilot's NrdrLatEpsFirmwareFF toggle, baked in on here).
+Named LatControlClarityEps / latcontrol_clarity_eps.py until it ran on more than the Clarity.
 
 Upstream JamesL787/openpilot vfn-controller-shadow 8c3a3fd8 / fd815ef3, which selects it for the Clarity
-unconditionally. Here it is behind the toggle, and the Civic Bosch C020 runs it with its own firmware calibration
+unconditionally. Here the Civic Bosch C020 runs it with its own firmware calibration
 (nrdr_eps_firmware_ff.CIVIC_BOSCH_C020), its own column load (CIVIC_EPS_LOAD) and its own fixed P/I trims
 (CIVIC_P_SCALE / CIVIC_I_SCALE); everything else is upstream's. Upstream's HondaTorqueOutputLowPassFilter / HondaTorqueOutputLpfTau* keys do not exist on this
 branch, so the output LPF runs on upstream's values (OUTPUT_LPF_TAU) and HondaLpfTau* (this branch's target
@@ -14,8 +14,9 @@ feedforward that inverts the EPS firmware's own P + D + KFF law, so the command 
 to move the wheel along the desired path rather than one it has to be dragged into by error.
 
 This shell does what LatControlPID does around its PID for a modified-EPS Honda, reusing the same helpers so
-each setting behaves identically: curvature -> wheel angle through the firmware VGR table or the
-road-measured ratio curve (NrdrLatUseFirmwareVgr), the angle-rate ceiling (NrdrLatAngleRateLimit), the shared
+each setting behaves identically: curvature -> wheel angle through the road-measured ratio curve (StarPilot's
+NrdrLatUseFirmwareVgr, baked in off here; the firmware VGR table only for a car with no measured curve), the
+angle-rate ceiling (NRDR_ANGLE_RATE_LIMIT_DEG_S), the shared
 driver-override detector, and the speed-banded output low-pass. Settings read elsewhere (carcontroller, carstate, controlsd) apply unchanged.
 
 Not read here, on purpose: LatPScale*, LatIScale*, HondaLateralPidKp/KiScale (the PID is fixed to the tune the
@@ -31,14 +32,11 @@ from iqdbc.car.honda.carcontroller import get_eps_modified_steering_pressed
 from iqdbc.car.honda.steer_ratio import get_honda_vgr_inverse, vgr_linear_to_physical
 from iqdbc.car.honda.values import CAR as HONDA
 from iqdbc.lvbs.car.honda.iq_values import HondaFlagsIQ
-from iqpilot.common.params import Params
 from iqpilot.selfdrive.controls.lib.latcontrol import LatControl
 from iqpilot.selfdrive.controls.lib.latcontrol_honda_eps_helpers import (
   NRDR_ANGLE_RATE_LIMIT_DEG_S,
   NRDR_SR_CURVE_BY_FP,
   NRDR_SR_CURVE_INVERSE_BY_FP,
-  _get_param_bool,
-  _get_param_float,
   rate_limit_desired_angle,
   solve_angle_from_ratio_curve,
 )
@@ -51,15 +49,10 @@ from iqpilot.selfdrive.controls.lib.nrdr_eps_firmware_ff import (
   HondaEpsLateralCore,
 )
 
-SETTINGS_REFRESH_FRAMES = 300
-
-
-def use_honda_eps_controller(CP, CP_IQ, params=None) -> bool:
+def use_honda_eps_controller(CP, CP_IQ) -> bool:
   # IQ.Pilot keeps the modified-EPS flag on IQCarParams (HondaFlagsIQ.EPS_MODIFIED), not on CarParams.flags.
-  if not (CP.carFingerprint in (HONDA.HONDA_CLARITY, HONDA.HONDA_CIVIC_BOSCH) and bool(CP_IQ.flags & HondaFlagsIQ.EPS_MODIFIED)
-          and CP.lateralTuning.which() == "pid"):
-    return False
-  return _get_param_bool(params, "NrdrLatEpsFirmwareFF")
+  return (CP.carFingerprint in (HONDA.HONDA_CLARITY, HONDA.HONDA_CIVIC_BOSCH) and bool(CP_IQ.flags & HondaFlagsIQ.EPS_MODIFIED)
+          and CP.lateralTuning.which() == "pid")
 
 
 # Lateral delay the model is told (liveDelay.lateralDelay's role in lat_action_t), scheduled on speed, per car.
@@ -74,9 +67,9 @@ EPS_LAT_DELAY_SCHEDULE = {
 }
 
 
-def eps_lateral_delay_schedule(CP, CP_IQ, params=None):
+def eps_lateral_delay_schedule(CP, CP_IQ):
   """The speed schedule to tell the model instead of liveDelay, or None to keep liveDelay."""
-  if CP.carFingerprint not in EPS_LAT_DELAY_SCHEDULE or not use_honda_eps_controller(CP, CP_IQ, params):
+  if CP.carFingerprint not in EPS_LAT_DELAY_SCHEDULE or not use_honda_eps_controller(CP, CP_IQ):
     return None
   return EPS_LAT_DELAY_SCHEDULE[CP.carFingerprint]
 
@@ -141,17 +134,10 @@ class LatControlHondaEps(LatControl):
     self.vgr_inverse = get_honda_vgr_inverse(CP.flags)
     self.cmd_delay_schedule = EPS_CMD_DELAY.get(CP.carFingerprint, ([0.0], [0.0]))
     self.cmd_delay = CommandDelay(dt, max(self.cmd_delay_schedule[1]))
-    self.params = Params()
-    self.frame = -1
     self.prev_rate_limited_angle = 0.0
     self.steering_pressed_filter_s = 0.0
     self.steering_pressed_prev = False
-    self._read_settings()
-
-  def _read_settings(self):
-    self.use_firmware_vgr = _get_param_bool(self.params, "NrdrLatUseFirmwareVgr")
-    self.angle_rate_limit_deg_s = _get_param_float(self.params, "NrdrLatAngleRateLimit", NRDR_ANGLE_RATE_LIMIT_DEG_S, 0.0, 2000.0)
-    # upstream also reads HondaTorqueOutputLowPassFilter / HondaTorqueOutputLpfTau* here; not keys on this branch
+    self.angle_rate_limit_deg_s = NRDR_ANGLE_RATE_LIMIT_DEG_S
 
   def reset(self):
     super().reset()
@@ -161,7 +147,7 @@ class LatControlHondaEps(LatControl):
 
   def _desired_angle_no_offset(self, VM, v_ego, roll, desired_curvature):
     # Same rack map selection as LatControlPID; see the comments there for why the two maps differ.
-    if self.sr_curve is not None and not (self.use_firmware_vgr and self.vgr_inverse is not None):
+    if self.sr_curve is not None:
       sr_bp, sr_v = self.sr_curve
       VM.sR = 1.0
       unit_ratio_angle = math.degrees(VM.get_steer_from_curvature(-desired_curvature, v_ego, roll))
@@ -193,9 +179,6 @@ class LatControlHondaEps(LatControl):
       output = 0.0
       pid_log.active = False
     else:
-      self.frame += 1
-      if self.frame % SETTINGS_REFRESH_FRAMES == 0:
-        self._read_settings()
       self.steering_pressed_filter_s, steering_pressed = get_eps_modified_steering_pressed(
         bool(CS.steeringPressed), float(getattr(CS, "steeringTorque", 0.0)), float(self.core.output),
         self.steering_pressed_filter_s, self.steering_pressed_prev,

@@ -112,17 +112,9 @@ def get_eps_modified_steering_pressed(
   return filter_s, filter_s >= 0.28
 
 
-# NrdrLatVfnOverride (StarPilot): fade the command to 0 at once on a press, back up over this long once released.
+# StarPilot's NrdrLatVfnOverride, baked in on for modified-EPS cars: fade the command to 0 at once on a press, back up
+# over this long once released.
 VFN_OVERRIDE_FADE_UP_S = 1.5
-
-
-def _vfn_override_enabled() -> bool:
-  # Read once per CarController (each drive). Not in the checked-in params library; see iqpilot/common/params_extra.py.
-  try:
-    from iqpilot.common.params_extra import get_extra_bool
-    return get_extra_bool("NrdrLatVfnOverride")
-  except Exception:
-    return False
 
 
 class CarController(CarControllerBase, AolCarController, GasInterceptorCarController):
@@ -133,8 +125,8 @@ class CarController(CarControllerBase, AolCarController, GasInterceptorCarContro
     self.packer = CANPacker(dbc_names[Bus.pt])
     self.params = CarControllerParams(CP)
 
-    # vfn override policy (StarPilot NrdrLatVfnOverride), modified-EPS cars only and off by default
-    self.vfn_override = bool(CP_IQ.flags & HondaFlagsIQ.EPS_MODIFIED) and _vfn_override_enabled()
+    # vfn override policy (StarPilot NrdrLatVfnOverride), always on for a modified EPS (the LatControlHondaEps cars)
+    self.vfn_override = bool(CP_IQ.flags & HondaFlagsIQ.EPS_MODIFIED)
     self.steering_pressed_filter_s = 0.0
     self.steering_pressed_robust_prev = False
     self.override_ramp = 1.0

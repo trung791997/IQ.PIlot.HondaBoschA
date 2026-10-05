@@ -114,7 +114,7 @@ class Controls(IQControlsLayer):
     self.LaC: LatControl
     if self.CP.steerControlType in (car.CarParams.SteerControlType.angle, car.CarParams.SteerControlType.curvatureDEPRECATED):
       self.LaC = LatControlAngle(self.CP, self.CP_IQ, self.CI, DT_CTRL)
-    elif use_honda_eps_controller(self.CP, self.CP_IQ, self.params):
+    elif use_honda_eps_controller(self.CP, self.CP_IQ):
       self.LaC = LatControlHondaEps(self.CP, self.CP_IQ, self.CI, DT_CTRL)
     elif self.CP.lateralTuning.which() == 'pid':
       self.LaC = LatControlPID(self.CP, self.CP_IQ, self.CI, DT_CTRL)
@@ -136,7 +136,7 @@ class Controls(IQControlsLayer):
 
     # LatControlHondaEps (StarPilot PR 14): tell the model a per-car, speed-scheduled lateral delay instead of liveDelay
     self.turn_shaping = isinstance(self.LaC, LatControlHondaEps)
-    self.lat_delay_schedule = eps_lateral_delay_schedule(self.CP, self.CP_IQ, self.params) if self.turn_shaping else None
+    self.lat_delay_schedule = eps_lateral_delay_schedule(self.CP, self.CP_IQ) if self.turn_shaping else None
 
   def _use_pq_torque(self) -> bool:
     try:

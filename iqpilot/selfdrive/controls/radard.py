@@ -2,7 +2,6 @@
 import math
 import numpy as np
 from collections import deque
-from functools import cache
 from types import SimpleNamespace
 from typing import Any
 
@@ -10,7 +9,6 @@ import capnp
 from iqpilot.cereal import messaging, log, car
 from iqpilot.common.filter_simple import FirstOrderFilter
 from iqpilot.common.params import Params
-from iqpilot.common.params_extra import get_extra_bool
 from iqpilot.common.realtime import DT_MDL, Priority, config_realtime_process
 from iqpilot.common.swaglog import cloudlog
 from iqpilot.common.simple_kalman import KF1D
@@ -199,7 +197,8 @@ BOSCH_A_U11_SCALE_MPS = BOSCH_A_DIRECT_VREL_SCALE_MPS
 BOSCH_A_U11_LOW_RAIL_MPS = (BOSCH_A_DIRECT_VREL_MIN_RAW - BOSCH_A_DIRECT_VREL_CENTER_RAW) * BOSCH_A_U11_SCALE_MPS
 BOSCH_A_U11_HIGH_RAIL_MPS = (BOSCH_A_DIRECT_VREL_MAX_RAW - BOSCH_A_DIRECT_VREL_CENTER_RAW) * BOSCH_A_U11_SCALE_MPS
 
-# D-077 (PROPOSED, both switches OFF; replay comparison only, not driven). The Bosch-A bank is the camera tracker
+# D-077 (StarPilot: proposed, both switches off; baked in ON here, BOSCH_A_BIRTH_RAIL_RAMPS; replay comparison only,
+# not driven). The Bosch-A bank is the camera tracker
 # (STATUS 205) and U11 its low-pass velocity state. A track whose U11 is railed within BIRTH_RAIL_WINDOW_S of its
 # first update is "born railed"; while U11 stays on that rail the published vRel ramps toward the rail as
 # rail * (1 - e^(-age/TAU)), normalised to reach the full rail at BIRTH_RAIL_RAMP_MAX_AGE_S. Evidence
@@ -631,17 +630,14 @@ def set_bosch_a_newborn_leads(enabled: bool) -> None:
 
 
 
-@cache
-def _bosch_a_birth_rail_ramps_param() -> bool:
-  # Read once per radard process (radard restarts every drive). It is checked per track per sweep, and this key is
-  # not in the checked-in params library, so it is a file read (iqpilot/common/params_extra.py).
-  return get_extra_bool("BoschABirthRailRamps")
+# StarPilot's BoschABirthRailRamps toggle (default off there), baked in on here (owner, 2026-10-05). Replay only.
+BOSCH_A_BIRTH_RAIL_RAMPS = True
 
 def bosch_a_birth_rail_ramp_high_enabled() -> bool:
-  return _bosch_a_birth_rail_ramps_param()
+  return BOSCH_A_BIRTH_RAIL_RAMPS
 
 def bosch_a_birth_rail_ramp_low_enabled() -> bool:
-  return _bosch_a_birth_rail_ramps_param()
+  return BOSCH_A_BIRTH_RAIL_RAMPS
 
 def bosch_a_range_kf_enabled() -> bool:
   try:
@@ -1362,7 +1358,7 @@ class Track:
     # association read those -- and so does self.vLeadK, so nothing applies the correction twice.
     correction = float(self.range_assist_correction)
     if self.birth_rail_vrel is not None:
-      # D-077 ramp (switches off by default): the same shift on all three speeds, so the lead stays self-consistent.
+      # D-077 ramp (baked in on, BOSCH_A_BIRTH_RAIL_RAMPS): the same shift on all three speeds, so the lead stays self-consistent.
       correction = float(self.vRel) - float(self.birth_rail_vrel)
     state = {
       "dRel": float(self.dRel),
