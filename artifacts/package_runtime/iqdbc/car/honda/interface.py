@@ -10,6 +10,7 @@ from iqdbc.car.honda.values import CarControllerParams, HondaFlags, CAR, HONDA_B
 from iqdbc.car.honda.carcontroller import CarController
 from iqdbc.car.honda.carstate import CarState
 from iqdbc.car.honda.radar_interface import RadarInterface
+from iqdbc.car.honda.steer_ratio import get_honda_vgr_profile, HONDA_VGR_PROFILE_FLAGS
 from iqdbc.car.interfaces import CarInterfaceBase
 
 from iqdbc.lvbs.car.honda.iq_values import HondaFlagsIQ, HondaSafetyFlagsIQ
@@ -106,6 +107,13 @@ class CarInterface(CarInterfaceBase):
     for fw in car_fw:
       if fw.ecu == "eps" and b"," in fw.fwVersion:
         ret.dashcamOnly = True
+
+    # VGR is selected by the exact EPS image, not by vehicle family and not by
+    # the generic comma-based modified-EPS detector. Unknown firmware gets no
+    # VGR override and therefore retains the normal fixed steer ratio.
+    vgr_profile = get_honda_vgr_profile(car_fw)
+    if vgr_profile is not None:
+      ret.flags |= int(HONDA_VGR_PROFILE_FLAGS[vgr_profile])
 
     if candidate == CAR.HONDA_CIVIC:
       ret.lateralParams.torqueBP, ret.lateralParams.torqueV = [[0, 2560], [0, 2560]]

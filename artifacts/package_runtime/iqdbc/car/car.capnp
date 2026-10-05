@@ -392,6 +392,17 @@ struct RadarData @0x888ad6581cf0aacb {
     jLead @9 :Float32; # m/s^3
     radarSource @10 :RadarSource;
 
+    # Honda Bosch-A only (StarPilot radar_interface; there they are @7..@10, which IQ.Pilot already uses above):
+    # closing vRel implied by NORMALIZED_CLOSING (-NC * dRel) on a measured sweep, with NO range or sigma limit
+    # applied; ncValid when NC has a closing reading (raw != 512), else ignore ncVRel. ncSigma is the raw NC sigma
+    # (7-bit, 127 when absent). Consumers apply their own limits (radard's RANGE_VREL_RAIL_NC_VETO, D-071).
+    ncVRel @11 :Float32; # m/s
+    ncValid @12 :Bool;
+    ncSigma @13 :UInt8;
+    # OBJECT_EXISTENCE_PROBABILITY_RAW / 127 (0..1) from the observation that produced this point. -1 (the default)
+    # means "not provided": every other radar. radard gates only NEW onpath adoption on its window median.
+    existence @14 :Float32 = -1.0;
+
     enum RadarSource {
       frontRadar @0;
       scc @1;

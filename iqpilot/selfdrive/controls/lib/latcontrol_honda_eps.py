@@ -26,13 +26,14 @@ from collections import deque
 
 import numpy as np
 
-from iqpilot.cereal import custom, log
+from iqpilot.cereal import log
 from iqdbc.car.honda.carcontroller import get_eps_modified_steering_pressed
 from iqdbc.car.honda.steer_ratio import get_honda_vgr_inverse, vgr_linear_to_physical
-from iqdbc.car.honda.values import CAR as HONDA, HondaFlags
+from iqdbc.car.honda.values import CAR as HONDA
+from iqdbc.lvbs.car.honda.iq_values import HondaFlagsIQ
 from iqpilot.common.params import Params
 from iqpilot.selfdrive.controls.lib.latcontrol import LatControl
-from iqpilot.selfdrive.controls.lib.latcontrol_pid_starpilot import (
+from iqpilot.selfdrive.controls.lib.latcontrol_honda_eps_helpers import (
   NRDR_ANGLE_RATE_LIMIT_DEG_S,
   NRDR_SR_CURVE_BY_FP,
   NRDR_SR_CURVE_INVERSE_BY_FP,
@@ -53,11 +54,12 @@ from iqpilot.selfdrive.controls.lib.nrdr_eps_firmware_ff import (
 SETTINGS_REFRESH_FRAMES = 300
 
 
-def use_honda_eps_controller(CP, params=None) -> bool:
-  if not (CP.carFingerprint in (HONDA.HONDA_CLARITY, HONDA.HONDA_CIVIC_BOSCH) and bool(CP.flags & HondaFlags.EPS_MODIFIED)
+def use_honda_eps_controller(CP, CP_IQ, params=None) -> bool:
+  # IQ.Pilot keeps the modified-EPS flag on IQCarParams (HondaFlagsIQ.EPS_MODIFIED), not on CarParams.flags.
+  if not (CP.carFingerprint in (HONDA.HONDA_CLARITY, HONDA.HONDA_CIVIC_BOSCH) and bool(CP_IQ.flags & HondaFlagsIQ.EPS_MODIFIED)
           and CP.lateralTuning.which() == "pid"):
     return False
-  return _get_param_bool(params if params is not None else Params(), "NrdrLatEpsFirmwareFF")
+  return _get_param_bool(params, "NrdrLatEpsFirmwareFF")
 
 
 # Lateral delay the model is told (liveDelay.lateralDelay's role in lat_action_t), scheduled on speed, per car.
@@ -72,9 +74,9 @@ EPS_LAT_DELAY_SCHEDULE = {
 }
 
 
-def eps_lateral_delay_schedule(CP, params=None):
+def eps_lateral_delay_schedule(CP, CP_IQ, params=None):
   """The speed schedule to tell the model instead of liveDelay, or None to keep liveDelay."""
-  if CP.carFingerprint not in EPS_LAT_DELAY_SCHEDULE or not use_honda_eps_controller(CP, params):
+  if CP.carFingerprint not in EPS_LAT_DELAY_SCHEDULE or not use_honda_eps_controller(CP, CP_IQ, params):
     return None
   return EPS_LAT_DELAY_SCHEDULE[CP.carFingerprint]
 
@@ -144,7 +146,6 @@ class LatControlHondaEps(LatControl):
     self.prev_rate_limited_angle = 0.0
     self.steering_pressed_filter_s = 0.0
     self.steering_pressed_prev = False
-    self.starpilot_lateral_state = custom.StarPilotLateralState.new_message()
     self._read_settings()
 
   def _read_settings(self):
@@ -170,8 +171,8 @@ class LatControlHondaEps(LatControl):
     linear = math.degrees(VM.get_steer_from_curvature(-desired_curvature, v_ego, roll))
     return vgr_linear_to_physical(linear, self.vgr_inverse)
 
-  def update(self, active, CS, VM, params, steer_limited_by_safety, desired_curvature, curvature_limited,
-             lat_delay, calibrated_pose, model_data, starpilot_toggles):
+  def update(self, active, CS, VM, params, steer_limited_by_safety, desired_curvature, calibrated_pose,
+             curvature_limited, lat_delay):
     pid_log = log.ControlsState.LateralPIDState.new_message()
     pid_log.steeringAngleDeg = float(CS.steeringAngleDeg)
     pid_log.steeringRateDeg = float(CS.steeringRateDeg)
@@ -212,12 +213,5 @@ class LatControlHondaEps(LatControl):
       pid_log.saturated = bool(self._check_saturation(self.steer_max - abs(output) < 1e-3, CS, steer_limited_by_safety,
                                                       curvature_limited))
 
-    ff = self.core.ff
-    state = self.starpilot_lateral_state
-    state.epsFfActive = bool(active)
-    state.epsFfWeight = float(self.core.ff_weight)
-    state.epsFfFeedforward = float(ff.output)
-    state.epsFfR5 = float(ff.r5)
-    state.epsFfLoad = float(ff.load)
-    state.epsFfDesiredRate = float(ff.rate)
+    # StarPilot also logs the feedforward state in starpilotLateralState, which IQ.Pilot does not have.
     return output, angle_des, pid_log

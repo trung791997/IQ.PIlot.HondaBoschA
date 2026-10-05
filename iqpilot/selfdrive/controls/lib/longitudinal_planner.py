@@ -7,6 +7,7 @@ from iqdbc.car.interfaces import ACCEL_MIN, ACCEL_MAX
 from iqpilot.common.constants import CV
 from iqpilot.common.filter_simple import FirstOrderFilter
 from iqpilot.common.params import Params, UnknownKeyName
+from iqpilot.common.params_extra import get_extra_bool
 from iqpilot.common.realtime import DT_MDL
 from iqpilot.selfdrive.iqmodeld.config import ModelConstants
 from iqpilot.selfdrive.controls.lib.longcontrol import LongCtrlState
@@ -52,6 +53,20 @@ MODE_BLEND_BRAKE_PASS = -1.0
 def get_max_accel(v_ego):
   return np.interp(v_ego, A_CRUISE_MAX_BP, A_CRUISE_MAX_VALS)
 
+HUMAN_ACCEL_CITY_SPEED_LIMIT = 25.  # m/s, FrogPilot CITY_SPEED_LIMIT
+
+
+def get_max_accel_low_speeds(max_accel, v_cruise):
+  """Scale max accel by the set speed: 1/4 at 0, 1/2 at 12.5 m/s, full from 25 m/s."""
+  return float(np.interp(v_cruise, [0., HUMAN_ACCEL_CITY_SPEED_LIMIT / 2, HUMAN_ACCEL_CITY_SPEED_LIMIT],
+                         [max_accel / 4, max_accel / 2, max_accel]))
+
+
+def get_max_accel_ramp_off(max_accel, v_cruise, v_ego):
+  """Ease off as v_ego nears the set speed: 0 at it, 0.5 at 1 m/s below, full at 5 m/s below."""
+  return float(np.interp(v_cruise - v_ego, [0., 1., 5.], [0., 0.5, max_accel]))
+
+
 def get_coast_accel(pitch):
   return np.sin(pitch) * -5.65 - 0.3
 
@@ -67,10 +82,10 @@ def get_cruise_accel(e2e, v_cruise, v_ego, a_cruise_prev, angle_steers, CP, dt, 
     max_accel = ACCEL_MAX
   else:
     max_accel = get_max_accel(v_ego)
-    # HumanAcceleration from Starpilot
-    max_accel = float(np.interp(v_cruise, [0., 12.5, 25.0], [max_accel / 4, max_accel / 2, max_accel]))
-    max_accel = float(np.interp(v_cruise - v_ego, [0., 1., 5.], [0., 0.5, max_accel]))
-
+    # HumanAcceleration (StarPilot starpilot_acceleration.py, always on there): scale by the set speed, then ease off
+    # as v_ego nears it. Throttle side only.
+    max_accel = get_max_accel_low_speeds(max_accel, v_cruise)
+    max_accel = min(get_max_accel_ramp_off(max_accel, v_cruise, v_ego), max_accel)
 
   if not e2e:
     a_total_max = np.interp(v_ego, _A_TOTAL_MAX_BP, _A_TOTAL_MAX_V)
@@ -142,8 +157,20 @@ STOCK_FEEL_JERK_OUTSIDE = 5.0  # m/s^3
 # are untouched and the point is never dropped (D-041/D-042); only the assumed lead decel is bounded.
 
 
-BRAKE_RELEASE_JERK = 2.0  # m/s^3
-BRAKE_RELEASE_DWELL_TICKS = int(0.2 / 0.05)  # 0.2s at 20Hz
+# Brake release slew and dwell (StarPilot, built in on there; closed-loop replay only, not driven). While braking the
+# target may rise at most BRAKE_RELEASE_JERK, and a rise is held for BRAKE_RELEASE_DWELL_TICKS cycles first.
+# Cost: every brake release starts 0.1 s later, and -2.5 -> 0 takes 1 s.
+BRAKE_RELEASE_JERK = 2.5  # m/s^3
+BRAKE_RELEASE_DWELL_TICKS = 2
+
+# D-072 (StarPilot, built in on; it shipped as the PlannerShortActionTime toggle, default on): read the MPC output
+# 0.30 s along the plan instead of at the actuator delay. Only the read-off point moves. Replay evidence only.
+PLANNER_ACTION_T_OVERRIDE = True
+PLANNER_ACTION_T_S = 0.30
+
+
+def get_planner_action_t(actuator_delay: float) -> float:
+  return PLANNER_ACTION_T_S if PLANNER_ACTION_T_OVERRIDE else actuator_delay + DT_MDL
 
 
 def brake_onset_ttc(leads, min_closing: float = 1e-3) -> float:
@@ -217,6 +244,9 @@ class LongitudinalPlanner(LongitudinalPlannerIQ):
     except UnknownKeyName:
       distance_control_enabled = False
     self.distance_control = E2EDistanceController(distance_control_enabled, dt)
+    # D-086 StockBrakeFeel (StarPilot, off by default). Not in the checked-in params library; read once per drive.
+    self.stock_brake_feel = get_extra_bool("StockBrakeFeel")
+    self.brake_release_rise_ticks = BRAKE_RELEASE_DWELL_TICKS + 1
     try:
       accel_boost_enabled = Params().get_bool("IQGasOverrideBoost")
     except UnknownKeyName:
@@ -295,36 +325,13 @@ class LongitudinalPlanner(LongitudinalPlannerIQ):
       cloudlog.info("FCW triggered")
     a_prev = self.a_desired
 
-    try:
-      short_action = self.params.get_bool("PlannerShortActionTime")
-    except Exception:
-      short_action = True
-    if short_action:
-      action_t = 0.30
-    else:
-      action_t = self.CP.longitudinalActuatorDelay + DT_MDL
+    action_t = get_planner_action_t(self.CP.longitudinalActuatorDelay)
 
     output_a_target_mpc, output_should_stop_mpc = get_accel_from_plan(self.v_desired_trajectory, self.a_desired_trajectory, CONTROL_N_T_IDX,
                                                                         action_t=action_t, stopping_speed=self.stopping_speed)
 
     accel_boost = self.accel_boost.update(sm['selfdriveState'].enabled, v_ego, sm['carState'].gasPressed)
     output_a_target_e2e = sm['modelV2'].action.desiredAcceleration + accel_boost
-
-    # Exp Mode Brake Jab fix (approximate for e2e since close_lead_cap is removed)
-    if self.is_e2e(sm):
-      chill_floor = -1.0
-      if output_a_target_e2e < chill_floor:
-        v_rel = sm['radarState'].leadOne.vRel if sm['radarState'].leadOne.status else 0.0
-        if v_rel > -1.0: # not fast closing
-          if not hasattr(self, 'exp_close_lead_floor'):
-            self.exp_close_lead_floor = chill_floor
-          self.exp_close_lead_floor = max(-3.5, self.exp_close_lead_floor - 1.5 * self.dt)
-          output_a_target_e2e = max(output_a_target_e2e, self.exp_close_lead_floor)
-        else:
-          self.exp_close_lead_floor = output_a_target_e2e
-      else:
-        self.exp_close_lead_floor = chill_floor
-
 
     output_should_stop_e2e = sm['modelV2'].action.shouldStop
     output_a_target_e2e, output_should_stop_e2e = self.apply_e2e_stop_distance(sm, v_ego, output_a_target_e2e, output_should_stop_e2e)
@@ -341,7 +348,8 @@ class LongitudinalPlanner(LongitudinalPlannerIQ):
       t_shifted = T_IDXS_MPC + t_cut
       v_shifted = np.interp(t_shifted, T_IDXS_MPC, model_v)
       a_shifted = np.interp(t_shifted, T_IDXS_MPC, model_a)
-      a_launch = get_accel_from_plan(v_shifted, a_shifted, T_IDXS_MPC, action_t=action_t)[0]
+      # the model-launch read keeps the actuator delay (D-072 moves only the MPC read-off point)
+      a_launch = get_accel_from_plan(v_shifted, a_shifted, T_IDXS_MPC, action_t=self.CP.longitudinalActuatorDelay + DT_MDL)[0]
       a_launch_max = np.interp(v_ego, [LAUNCH_MOVING_SPEED, LAUNCH_DISARM_SPEED], [LAUNCH_MAX_ACCEL, 0.])
       output_a_target_e2e = max(output_a_target_e2e, min(a_launch, a_launch_max))
 
@@ -384,18 +392,17 @@ class LongitudinalPlanner(LongitudinalPlannerIQ):
       self.mode_blend_timer = 0.0 if limited_a_target == output_a_target else max(self.mode_blend_timer - self.dt, 0.0)
       output_a_target = limited_a_target
 
-    
-    # Starpilot custom behaviors (Stock Brake Feel, Resume Brake Ramp)
-    try:
-      stock_brake_feel_on = self.params.get_bool("StockBrakeFeel")
-    except Exception:
-      stock_brake_feel_on = True
-    if stock_brake_feel_on and not sm['carState'].standstill and not output_should_stop_mpc:
+    # StarPilot brake shaping, same gates as there: never while stopping, at standstill or on a planner reset
+    standstill = bool(sm['carState'].standstill)
+    if self.stock_brake_feel and not reset_state and not standstill and not self.output_should_stop:
       leads = (sm['radarState'].leadOne, sm['radarState'].leadTwo)
       output_a_target = stock_feel_target(leads, a_prev, output_a_target, self.dt)
-      
-    if not sm['carState'].standstill:
+    if not reset_state and not standstill:
       output_a_target = brake_release_limited_target(a_prev, output_a_target, self.dt)
+      output_a_target, self.brake_release_rise_ticks = brake_release_dwell_target(a_prev, output_a_target,
+                                                                                  self.brake_release_rise_ticks)
+    else:
+      self.brake_release_rise_ticks = BRAKE_RELEASE_DWELL_TICKS + 1
     self.output_a_target = np.clip(output_a_target, ACCEL_MIN, ACCEL_MAX)
 
     self.a_desired = float(self.output_a_target)

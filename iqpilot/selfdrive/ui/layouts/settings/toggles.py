@@ -1,5 +1,6 @@
 from iqpilot.cereal import log
 from iqpilot.common.params import Params, UnknownKeyName
+from iqpilot.common.params_extra import get_extra_bool, put_extra_bool
 from iqpilot.common.ui_settings import LONGITUDINAL_MODE_VALUES
 from iqpilot.selfdrive.longitudinal_settings import apply_longitudinal_mode
 from iqpilot.system.ui.widgets import Widget
@@ -51,6 +52,48 @@ DESCRIPTIONS = {
   "IQTelemetryEnabled": tr_noop(
     "Once a day, sends settings, versions, car model and coarse usage counts under a random install ID. " +
     "Never sends your dongle ID, VIN, serials, location, routes or anything you typed."
+  ),
+}
+
+
+# Honda settings ported from StarPilot. They are not in the checked-in params library, so they are stored through
+# iqpilot/common/params_extra.py. key: (title, description, icon). All are read when a drive starts.
+HONDA_STARPILOT_TOGGLES = {
+  "NrdrLatEpsFirmwareFF": (
+    lambda: tr("EPS Firmware Feedforward (James Controller)"),
+    tr_noop("Modified-EPS Clarity and Civic Bosch only. Steers with LatControlHondaEps: an angle PID plus a " +
+            "feedforward that inverts the EPS firmware's own control law. Takes effect on the next drive."),
+    "chffr_wheel.png",
+  ),
+  "NrdrLatUseFirmwareVgr": (
+    lambda: tr("Use Firmware VGR Table"),
+    tr_noop("With EPS Firmware Feedforward on, use the EPS firmware's variable-gear-ratio table instead of the " +
+            "road-measured steer-ratio curve. Takes effect on the next drive."),
+    "chffr_wheel.png",
+  ),
+  "NrdrLatVfnOverride": (
+    lambda: tr("VFN Steering Override"),
+    tr_noop("Modified-EPS Hondas only. A press on the wheel cuts steering torque at once and fades it back in over " +
+            "1.5 s after you let go. Meant for EPS Firmware Feedforward. Takes effect on the next drive."),
+    "chffr_wheel.png",
+  ),
+  "StockBrakeFeel": (
+    lambda: tr("Stock Brake Feel"),
+    tr_noop("Follow stock Honda ACC's brake depth and build-up rate while a lead is closing (TTC over 2 s). " +
+            "A lead that needs more than stock's depth closes the gap further. Takes effect on the next drive."),
+    "speed_limit.png",
+  ),
+  "BoschARangeOffsetFallback": (
+    lambda: tr("Radar Range Offset -2.617 m"),
+    tr_noop("Bosch-A radar: use the radar firmware's fallback range offset (-2.617 m) instead of -3.0 m. " +
+            "Every radar distance reads 0.38 m longer. Takes effect on the next drive."),
+    "lead_orb.png",
+  ),
+  "BoschABirthRailRamps": (
+    lambda: tr("Radar Birth-Rail Ramps"),
+    tr_noop("Bosch-A radar: ramp a newly seen point's closing speed in from the radar's rail instead of " +
+            "publishing the rail value. Replay evidence only. Takes effect on the next drive."),
+    "lead_orb.png",
   ),
 }
 
@@ -163,6 +206,15 @@ class TogglesLayout(Widget):
 
       self._toggles[param] = toggle
 
+    for param, (title, desc, icon) in HONDA_STARPILOT_TOGGLES.items():
+      self._toggles[param] = toggle_item(
+        title,
+        lambda d=desc: tr(d),
+        get_extra_bool(param),
+        callback=lambda state, p=param: put_extra_bool(p, state),
+        icon=icon,
+      )
+
     self._scroller = Scroller(list(self._toggles.values()), line_separator=True, spacing=0)
 
     ui_state.add_engaged_transition_callback(self._update_toggles)
@@ -233,6 +285,11 @@ class TogglesLayout(Widget):
     # refresh toggles from params to mirror external changes
     for param in self._toggle_defs:
       self._toggles[param].action_item.set_state(self._params.get_bool(param))
+
+    show_honda = ui_state.CP is None or ui_state.CP.brand == "honda"
+    for param in HONDA_STARPILOT_TOGGLES:
+      self._toggles[param].set_visible(show_honda)
+      self._toggles[param].action_item.set_state(get_extra_bool(param))
 
     # these toggles need restart, block while engaged
     for toggle_def in self._toggle_defs:

@@ -24,6 +24,9 @@ def _create_nidec_can_parser(car_fingerprint):
 # 0x280/0x284/0x288/0x28C as pieces of one object, or of 0x2C8/0x2C9 as a separate "coarse" list: it is
 # ONE 16-slot bank with one auxiliary frame per slot. See honda_bosch_a_radar.dbc for the bit geometry.
 BOSCH_A_DBC_NAME = 'honda_bosch_a_radar'
+# IQ.Pilot's values.py maps these platforms to its generated scan DBC, which describes the same 80 CAN IDs
+# (iqdbc/car/honda/radar_scan.py). Either name selects this decoder, which always parses with BOSCH_A_DBC_NAME.
+BOSCH_A_RADAR_DBC_NAMES = (BOSCH_A_DBC_NAME, 'honda_radar_scan_generated')
 BOSCH_A_NUM_SLOTS = 16
 
 
@@ -75,7 +78,7 @@ BOSCH_A_RANGE_SCALE_M = 1.0 / 16.0
 # only the fallback the firmware uses when the config word reads zero. -3.0 is retained because it
 # sits inside the plausible calibration range and the choice barely moves the residual. Do not
 # re-fit this against vision: read it from the radar's own configuration instead.
-BOSCH_A_RANGE_OFFSET_M = -2.617
+BOSCH_A_RANGE_OFFSET_M = -3.0
 # D-076, BoschARangeOffsetFallback (TEST, default OFF; owner decision 2026-10-03). ON uses the firmware's own fallback
 # offset, -335/128 = -2.6171875 m, instead of -3.0: every published dRel reads 0.3828125 m (6.125 range counts) LONGER.
 # Range differences, vRel and U11 are unchanged. Neither value is measured for this car: -3.0 is n = 384 (decoder
@@ -94,8 +97,8 @@ def bosch_a_range_offset_fallback_enabled() -> bool:
   """BoschARangeOffsetFallback, read once at startup the way interface.py reads BoschARadar. Any failure, including
   a params_pyx.so that predates the key, means OFF: -3.0."""
   try:
-    from iqpilot.common.params import Params
-    return bool(Params().get_bool(BOSCH_A_RANGE_OFFSET_FALLBACK_PARAM))
+    from iqpilot.common.params_extra import get_extra_bool
+    return get_extra_bool(BOSCH_A_RANGE_OFFSET_FALLBACK_PARAM)
   except Exception:
     return False
 
@@ -676,15 +679,15 @@ def _create_bosch_a_can_parser(CP):
   messages = [(addr, BOSCH_A_FREQ_HZ) for addr in BOSCH_A_ALL_IDS]
   # Bus.radar selects the Bosch-A DBC; the object/fusion feed itself is
   # physically on the camera-side ACC-CAN.
-  return CANParser(DBC[CP.carFingerprint][Bus.radar], messages, CanBus(CP).camera)
+  return CANParser(BOSCH_A_DBC_NAME, messages, CanBus(CP).camera)
 
 
 class RadarInterface(RadarInterfaceBase):
-  def __init__(self, CP):
-    super().__init__(CP)
+  def __init__(self, CP, CP_IQ=None):
+    super().__init__(CP, CP_IQ)
     self.radar_off_can = CP.radarUnavailable
     self.bosch_a_radar = (not self.radar_off_can and Bus.radar in DBC[CP.carFingerprint] and
-                           DBC[CP.carFingerprint][Bus.radar] == BOSCH_A_DBC_NAME)
+                           DBC[CP.carFingerprint][Bus.radar] in BOSCH_A_RADAR_DBC_NAMES)
     # Ego speed, set by card before each update (STATUS 179's reversing-coast bound). None until then.
     self.v_ego: float | None = None
 

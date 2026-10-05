@@ -806,6 +806,9 @@ struct RadarState @0x9a185389d6fdd05f {
 
   leadOne @3 :LeadData;
   leadTwo @4 :LeadData;
+  # Bosch-A only (ONPATH_RADAR_ADOPT in selfdrive/controls/radard.py, ported from StarPilot): a radar-only track that
+  # has sat on the driving path for a second while the model does not see it. leadOne is unchanged.
+  leadOnpath @14 :LeadData;
 
   struct LeadData {
     dRel @0 :Float32;
@@ -823,6 +826,13 @@ struct RadarState @0x9a185389d6fdd05f {
     modelProb @13 :Float32;
     radar @14 :Bool;
     radarTrackId @15 :Int32 = -1;
+
+    # Ported from StarPilot radard (same ordinals). vRelRangeDerived is a range-LSQ velocity published beside the
+    # radar's own vRel; on Bosch-A it also feeds the one-sided D-053 assist. measuredRadar: the last radar update was
+    # a real measurement, not a coast. ncVetoShadow: the D-071 NC veto WOULD zero a RAIL_FAST correction (shadow only).
+    vRelRangeDerived @16 :Float32;
+    measuredRadar @17 :Bool;
+    ncVetoShadow @18 :Bool;
 
     aLeadDEPRECATED @5 :Float32;
   }

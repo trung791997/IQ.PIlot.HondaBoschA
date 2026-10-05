@@ -73,16 +73,18 @@ class HondaFlags(IntFlag):
   NIDEC_ALT_SCM_MESSAGES = 64
 
   BOSCH_CANFD = 128
-  VGR_CLARITY_TRW_A020 = 32768
-  VGR_CIVIC_TBA_C020 = 65536
-  VGR_INSIGHT_TXM_A040 = 131072
-
 
   HAS_ALL_DOOR_STATES = 256  # Some Hondas have all door states, others only driver door
   BOSCH_ALT_RADAR = 512
   ALLOW_MANUAL_TRANS = 1024
   HYBRID = 2048
   BOSCH_TJA_CONTROL = 4096
+
+  # Exact EPS firmware profiles with traced variable-gear-ratio tables (steer_ratio.py).
+  # Same values as StarPilot; 8192/16384 are left free (EPS_MODIFIED lives in HondaFlagsIQ here).
+  VGR_CLARITY_TRW_A020 = 32768
+  VGR_CIVIC_TBA_C020 = 65536
+  VGR_INSIGHT_TXM_A040 = 131072
 
 
 # Car button codes
@@ -394,6 +396,9 @@ HONDA_BOSCH_TJA_CONTROL = CAR.with_flags(HondaFlags.BOSCH_TJA_CONTROL)
 
 # Bosch harness family whose radar broadcasts the decodable 16-slot object scan
 HONDA_RADAR_SCAN_CAPABLE = HONDA_BOSCH - HONDA_BOSCH_RADARLESS - HONDA_BOSCH_CANFD - HONDA_BOSCH_ALT_RADAR
+# StarPilot's name for the same set: the plain bosch_a harness its hand-written 16-slot object bank DBC
+# (honda_bosch_a_radar, see radar_interface.py) was reverse-engineered against. Same 80 CAN IDs as the scan above.
+HONDA_BOSCH_A = HONDA_RADAR_SCAN_CAPABLE
 # scan decode stays off per platform until a real route capture has been validated
 HONDA_RADAR_SCAN_VERIFIED = frozenset({CAR.HONDA_ACCORD, CAR.HONDA_CIVIC_BOSCH, CAR.HONDA_CRV_5G})
 

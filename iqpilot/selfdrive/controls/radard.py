@@ -2,17 +2,18 @@
 import math
 import numpy as np
 from collections import deque
+from functools import cache
 from types import SimpleNamespace
 from typing import Any
 
 import capnp
-from iqpilot.cereal import messaging, log, car, custom
+from iqpilot.cereal import messaging, log, car
 from iqpilot.common.filter_simple import FirstOrderFilter
 from iqpilot.common.params import Params
+from iqpilot.common.params_extra import get_extra_bool
 from iqpilot.common.realtime import DT_MDL, Priority, config_realtime_process
 from iqpilot.common.swaglog import cloudlog
 from iqpilot.common.simple_kalman import KF1D
-from iqpilot.starpilot.common.starpilot_variables import get_starpilot_toggles
 from iqdbc.car.honda.radar_interface import (BOSCH_A_DIRECT_VREL_CENTER_RAW, BOSCH_A_DIRECT_VREL_MIN_RAW,
                                                BOSCH_A_DIRECT_VREL_MAX_RAW,
                                                BOSCH_A_DIRECT_VREL_SCALE_MPS, BOSCH_A_FREQ_HZ)
@@ -630,17 +631,17 @@ def set_bosch_a_newborn_leads(enabled: bool) -> None:
 
 
 
+@cache
+def _bosch_a_birth_rail_ramps_param() -> bool:
+  # Read once per radard process (radard restarts every drive). It is checked per track per sweep, and this key is
+  # not in the checked-in params library, so it is a file read (iqpilot/common/params_extra.py).
+  return get_extra_bool("BoschABirthRailRamps")
+
 def bosch_a_birth_rail_ramp_high_enabled() -> bool:
-  try:
-    return bool(Params().get_bool("BoschABirthRailRamps"))
-  except Exception:
-    return False
+  return _bosch_a_birth_rail_ramps_param()
 
 def bosch_a_birth_rail_ramp_low_enabled() -> bool:
-  try:
-    return bool(Params().get_bool("BoschABirthRailRamps"))
-  except Exception:
-    return False
+  return _bosch_a_birth_rail_ramps_param()
 
 def bosch_a_range_kf_enabled() -> bool:
   try:
@@ -650,6 +651,14 @@ def bosch_a_range_kf_enabled() -> bool:
 
 def is_bosch_a_radar_car(CP) -> bool:
   return CP.brand == "honda" and CP.carFingerprint in HONDA_BOSCH_A and not CP.radarUnavailable
+
+
+def get_radard_toggles(CP=None) -> SimpleNamespace:
+  """The StarPilot toggles radard reads. LeadDetectionThreshold is not an IQ.Pilot setting: this is StarPilot's
+  effective default, 0.35 with openpilot longitudinal and its 0.25 floor without. Adjacent-lead tracking feeds
+  StarPilot's starpilotRadarState, which IQ.Pilot does not have, so it is off."""
+  op_long = bool(getattr(CP, "openpilotLongitudinalControl", True))
+  return SimpleNamespace(lead_detection_probability=0.35 if op_long else 0.25)
 
 
 # Adjacent-lane stopped-vehicle detector, used as a stop-line hint on red-light
@@ -1567,7 +1576,7 @@ def get_RadarState_from_vision(lead_msg: capnp._DynamicStructReader, v_ego: floa
 
 def get_lead(v_ego: float, ready: bool, tracks: dict[int, Track], lead_msg: capnp._DynamicStructReader,
              model_v_ego: float, model_data: capnp._DynamicStructReader, standstill: bool,
-             starpilot_plan: capnp._DynamicStructReader, starpilot_toggles: SimpleNamespace,
+             starpilot_toggles: SimpleNamespace,
              low_speed_override: bool = True, g90_radar_filter: bool = False, lead_prob: float | None = None,
              preferred_track_id: int = -1, honda_bosch_a_radar: bool = False) -> dict[str, Any]:
   lead_detection_probability = float(getattr(starpilot_toggles, "lead_detection_probability", 0.35))
@@ -1642,9 +1651,6 @@ def get_lead(v_ego: float, ready: bool, tracks: dict[int, Track], lead_msg: capn
   for track in tracks.values():
     track.leadTrackID = lead_dict.get('radarTrackId', -1)
 
-  if 'dRel' in lead_dict:
-    lead_dict['dRel'] -= starpilot_plan.increasedStoppedDistance
-
   return lead_dict
 
 
@@ -1694,7 +1700,7 @@ def get_adjacent_stopped(tracks: dict[int, Track], model_data: capnp._DynamicStr
 
 class RadarD:
   def __init__(self, radar_ts: float = DT_MDL, delay: float = 0.0, g90_radar_filter: bool = False,
-               honda_bosch_a_radar: bool = False):
+               honda_bosch_a_radar: bool = False, toggles: SimpleNamespace | None = None):
     self.current_time = 0.0
 
     self.tracks: dict[int, Track] = {}
@@ -1726,8 +1732,7 @@ class RadarD:
 
     self.ready = False
 
-    self.starpilot_radar_state = custom.StarPilotRadarState.new_message()
-    self.starpilot_toggles = get_starpilot_toggles()
+    self.starpilot_toggles = toggles if toggles is not None else get_radard_toggles()
 
   def _range_vrel_assist_enabled(self) -> bool:
     """D-053 assist switch, built in for Bosch-A (was the RangeDerivedVrel param). Replays flip RANGE_VREL_ASSIST."""
@@ -1801,8 +1806,8 @@ class RadarD:
 
     radar_fresh = True
     if self.honda_bosch_a_radar:
-      radar_fresh = sm.recv_frame['liveTracks'] != self._last_tracks_frame
-      self._last_tracks_frame = sm.recv_frame['liveTracks']
+      radar_fresh = sm.recv_frame['radarTracks'] != self._last_tracks_frame
+      self._last_tracks_frame = sm.recv_frame['radarTracks']
 
     ar_pts = {pt.trackId: [pt.dRel, pt.yRel, pt.vRel, pt.measured, pt.ncVRel, pt.ncValid, pt.ncSigma, getattr(pt, 'existence', -1.0)] for pt in rr.points}
 
@@ -1841,7 +1846,7 @@ class RadarD:
         vis = sm['modelV2'].leadsV3[0] if len(sm['modelV2'].leadsV3) else None
         cam_sample = (sm.logMonoTime['modelV2'] * 1e-9, camera_xrate_sample(rpt[0], rpt[1], vis))
       self.tracks[ids].update(rpt[0], rpt[1], rpt[2], v_lead, measured, measurement_update,
-                              t_now=sm.logMonoTime['liveTracks'] * 1e-9,
+                              t_now=sm.logMonoTime['radarTracks'] * 1e-9,
                               range_assist=ids in lead_track_ids, vision_closing=vis_closing,
                               vision_assist=vision_assist, camera_sample=cam_sample,
                               nc_vrel=rpt[4], nc_valid=rpt[5], nc_sigma=rpt[6],
@@ -1853,7 +1858,7 @@ class RadarD:
       position = getattr(sm['modelV2'], 'position', None) if self.ready else None
       px = np.asarray(position.x) if position is not None and len(position.x) else None
       py = np.asarray(position.y) if px is not None else None
-      t_live = sm.logMonoTime['liveTracks'] * 1e-9
+      t_live = sm.logMonoTime['radarTracks'] * 1e-9
       for ids, rpt in ar_pts.items():
         off = float('nan')
         if px is not None and 1.0 < rpt[0] <= px[-1]:
@@ -1866,8 +1871,6 @@ class RadarD:
     self.radar_state.mdMonoTime = sm.logMonoTime['modelV2']
     self.radar_state.radarErrors = rr.errors
     self.radar_state.carStateMonoTime = sm.logMonoTime['carState']
-
-    self.starpilot_radar_state = custom.StarPilotRadarState.new_message()
 
     if len(sm['modelV2'].velocity.x):
       model_v_ego = sm['modelV2'].velocity.x[0]
@@ -1889,13 +1892,13 @@ class RadarD:
         self._update_honda_bosch_a_preferred_staleness(i, leads_v3[i], self.lead_prob_filters[i].x)
 
       lead_one = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[0], model_v_ego, sm['modelV2'],
-                          sm['carState'].standstill, sm['starpilotPlan'], self.starpilot_toggles, low_speed_override=True,
+                          sm['carState'].standstill, self.starpilot_toggles, low_speed_override=True,
                           g90_radar_filter=self.g90_radar_filter, lead_prob=self.lead_prob_filters[0].x,
                           preferred_track_id=self.prev_lead_track_ids[0],
                           honda_bosch_a_radar=self.honda_bosch_a_radar)
       self.radar_state.leadOne = lead_one
       self.radar_state.leadTwo = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[1], model_v_ego, sm['modelV2'],
-                                          sm['carState'].standstill, sm['starpilotPlan'], self.starpilot_toggles, low_speed_override=False,
+                                          sm['carState'].standstill, self.starpilot_toggles, low_speed_override=False,
                                           g90_radar_filter=self.g90_radar_filter, lead_prob=self.lead_prob_filters[1].x,
                                           preferred_track_id=self.prev_lead_track_ids[1],
                                           honda_bosch_a_radar=self.honda_bosch_a_radar)
@@ -1907,7 +1910,7 @@ class RadarD:
         self.prev_onpath_track_id = onpath['radarTrackId'] if onpath is not None else -1
 
       if YOUNG_TRACK_FLAT_RANGE_BOUND and self.honda_bosch_a_radar:
-        t_live = sm.logMonoTime['liveTracks'] * 1e-9
+        t_live = sm.logMonoTime['radarTracks'] * 1e-9
         young_leads = [(self.radar_state.leadOne, leads_v3[0]), (self.radar_state.leadTwo, leads_v3[1])]
         if ONPATH_RADAR_ADOPT and self.honda_bosch_a_radar:
           young_leads.append((self.radar_state.leadOnpath, leads_v3[0]))
@@ -1949,19 +1952,7 @@ class RadarD:
           self.prev_lead_track_ids[i] = -1
           self._reset_preferred_stale_evidence(i)
 
-    if self.ready and (self.starpilot_toggles.adjacent_lead_tracking or self.starpilot_toggles.human_lane_changes):
-      self.starpilot_radar_state.leadLeft = get_adjacent_lead(self.tracks, sm['carState'].standstill, sm['modelV2'], left=True,
-                                                              honda_bosch_a=self.honda_bosch_a_radar)
-      self.starpilot_radar_state.leadRight = get_adjacent_lead(self.tracks, sm['carState'].standstill, sm['modelV2'], left=False,
-                                                              honda_bosch_a=self.honda_bosch_a_radar)
-
-    # Not gated on the adjacent-lead toggles: this is a separate signal with a separate
-    # consumer (Force Stop), and leaving leadLeft/leadRight untouched keeps existing
-    # lane-change and UI behaviour unchanged.
-    if self.ready:
-      self.starpilot_radar_state.adjacentStopped = get_adjacent_stopped(self.tracks, sm['modelV2'])
-
-    self.starpilot_toggles = get_starpilot_toggles(sm)
+    # StarPilot's adjacent-lead / adjacent-stopped outputs (starpilotRadarState) have no consumer in IQ.Pilot.
 
   def publish(self, pm: messaging.PubMaster):
     assert self.radar_state is not None
@@ -1970,11 +1961,6 @@ class RadarD:
     radar_msg.valid = self.radar_state_valid
     radar_msg.radarState = self.radar_state
     pm.send("radarState", radar_msg)
-
-    starpilot_radar_msg = messaging.new_message("starpilotRadarState")
-    starpilot_radar_msg.valid = self.radar_state_valid
-    starpilot_radar_msg.starpilotRadarState = self.starpilot_radar_state
-    pm.send("starpilotRadarState", starpilot_radar_msg)
 
 
 # fuses camera and radar data for best lead detection
@@ -1987,8 +1973,7 @@ def main() -> None:
   cloudlog.info("radard got CarParams")
 
   # *** setup messaging
-  sm = messaging.SubMaster(['modelV2', 'carState', 'liveTracks'], poll='modelV2',
-                           ignore_valid=['starpilotPlan'])
+  sm = messaging.SubMaster(['modelV2', 'carState', 'radarTracks'], poll='modelV2')
   pm = messaging.PubMaster(['radarState'])
 
   radar_ts = float(getattr(CP, "radarTimeStepDEPRECATED", DT_MDL) or DT_MDL)
@@ -2000,15 +1985,12 @@ def main() -> None:
   # Newborn leads: built in on for Bosch-A, matching radar_interface's BOSCH_A_NEWBORN_RANGE_PUBLISH.
   set_bosch_a_newborn_leads(honda_bosch_a_radar)
   RD = RadarD(radar_ts=radar_ts, delay=CP.radarDelay, g90_radar_filter=g90_radar_filter,
-              honda_bosch_a_radar=honda_bosch_a_radar)
-
-  sm = sm.extend(['starpilotPlan'])
-  pm = pm.extend(['starpilotRadarState'])
+              honda_bosch_a_radar=honda_bosch_a_radar, toggles=get_radard_toggles(CP))
 
   while 1:
     sm.update()
 
-    RD.update(sm, sm['liveTracks'])
+    RD.update(sm, sm['radarTracks'])
     RD.publish(pm)
 
 

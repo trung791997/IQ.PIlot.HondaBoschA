@@ -10,6 +10,7 @@ from iqdbc.car.honda.values import CAR, CruiseButtons, CruiseSettings, HONDA_BOS
 from iqdbc.car.interfaces import CarControllerBase
 
 from iqdbc.lvbs.car.honda.aol import AolCarController
+from iqdbc.lvbs.car.honda.iq_values import HondaFlagsIQ
 from iqdbc.lvbs.car.honda.gas_interceptor import GasInterceptorCarController
 
 VisualAlert = structs.CarControl.HUDControl.VisualAlert
@@ -95,24 +96,33 @@ def process_hud_alert(hud_alert):
 
 
 def get_eps_modified_steering_pressed(
-  raw_pressed: bool,
-  sensor_torque: float,
-  torque_cmd: float,
-  filter_s: float,
-  robust_prev: bool,
+  raw_pressed: bool, steering_torque: float, torque_cmd: float, filter_s: float, previous_pressed: bool
 ) -> tuple[float, bool]:
-  import math
-  from iqpilot.common.realtime import DT_CTRL
-  # simplified VFN override detector
-  if raw_pressed:
-    if torque_cmd * sensor_torque < 0.0 or abs(torque_cmd) < 0.1:
-      filter_s = 0.28
-    else:
-      filter_s = min(0.28, filter_s + DT_CTRL)
-  else:
-    filter_s = 0.0
+  """Driver-override detector shared by every modified-EPS Honda (StarPilot ns-bosch-radar-testing): instant latch on
+  opposing or near-zero-command driver torque, 0.28 s on same-direction torque, instant release."""
+  if not raw_pressed:
+    return 0.0, False
 
-  return filter_s, (filter_s >= 0.28)
+  torque_product = float(steering_torque) * float(torque_cmd)
+  torque_cmd_abs = abs(float(torque_cmd))
+  if previous_pressed or torque_cmd_abs < 0.10 or torque_product < 0.0:
+    return 1.0, True
+
+  filter_s = min(1.0, filter_s + DT_CTRL)
+  return filter_s, filter_s >= 0.28
+
+
+# NrdrLatVfnOverride (StarPilot): fade the command to 0 at once on a press, back up over this long once released.
+VFN_OVERRIDE_FADE_UP_S = 1.5
+
+
+def _vfn_override_enabled() -> bool:
+  # Read once per CarController (each drive). Not in the checked-in params library; see iqpilot/common/params_extra.py.
+  try:
+    from iqpilot.common.params_extra import get_extra_bool
+    return get_extra_bool("NrdrLatVfnOverride")
+  except Exception:
+    return False
 
 
 class CarController(CarControllerBase, AolCarController, GasInterceptorCarController):
@@ -123,6 +133,8 @@ class CarController(CarControllerBase, AolCarController, GasInterceptorCarContro
     self.packer = CANPacker(dbc_names[Bus.pt])
     self.params = CarControllerParams(CP)
 
+    # vfn override policy (StarPilot NrdrLatVfnOverride), modified-EPS cars only and off by default
+    self.vfn_override = bool(CP_IQ.flags & HondaFlagsIQ.EPS_MODIFIED) and _vfn_override_enabled()
     self.steering_pressed_filter_s = 0.0
     self.steering_pressed_robust_prev = False
     self.override_ramp = 1.0
@@ -168,6 +180,35 @@ class CarController(CarControllerBase, AolCarController, GasInterceptorCarContro
     self.brake_pid = PIDController(k_p=0.0, k_i=1.0, pos_limit=0.0, neg_limit=-2.0, rate=50)
     self.brake_pid.reset()
 
+  def apply_vfn_override(self, CC, CS, torque_cmd: float) -> float:
+    """vfn-yaw-trim's override policy, written for LatControlHondaEps: every press goes through the 0.28 s
+    modified-EPS filter that controller uses for its own pressed state; the command drops to 0 at once and
+    fades back up over VFN_OVERRIDE_FADE_UP_S after release, and from 0 on each engagement."""
+    if CC.latActive:
+      self.steering_pressed_filter_s, steering_pressed = get_eps_modified_steering_pressed(
+        bool(CS.out.steeringPressed),
+        float(getattr(CS.out, "steeringTorque", 0.0)),
+        torque_cmd,
+        self.steering_pressed_filter_s,
+        self.steering_pressed_robust_prev,
+      )
+      self.steering_pressed_robust_prev = steering_pressed
+
+      if not self.lat_active_prev:
+        self.override_ramp = 0.0
+      if steering_pressed:
+        self.override_ramp = 0.0
+      else:
+        self.override_ramp = min(1.0, self.override_ramp + DT_CTRL / VFN_OVERRIDE_FADE_UP_S)
+      torque_cmd *= self.override_ramp
+    else:
+      self.override_ramp = 0.0
+      self.steering_pressed_filter_s = 0.0
+      self.steering_pressed_robust_prev = False
+
+    self.lat_active_prev = CC.latActive
+    return torque_cmd
+
   def update(self, CC, CC_IQ, CS, now_nanos):
     AolCarController.update(self, self.CP, CC, CC_IQ)
     gas_pedal_force = 0.0
@@ -189,38 +230,9 @@ class CarController(CarControllerBase, AolCarController, GasInterceptorCarContro
       gas, brake = 0.0, 0.0
 
 
-    torque_cmd = float(actuators.torque)
-    if CC.latActive:
-      try:
-        vfn_override = self.params.get_bool("NrdrLatVfnOverride")
-      except Exception:
-        vfn_override = True
-      if vfn_override:
-        self.steering_pressed_filter_s, steering_pressed = get_eps_modified_steering_pressed(
-          bool(CS.out.steeringPressed),
-          float(getattr(CS.out, "steeringTorque", 0.0)),
-          float(torque_cmd),
-          self.steering_pressed_filter_s,
-          self.steering_pressed_robust_prev,
-        )
-        self.steering_pressed_robust_prev = steering_pressed
-        
-        if not self.lat_active_prev:
-          self.override_ramp = 0.0
-          
-        if steering_pressed:
-          self.override_ramp = max(0.0, 0.0) # 0 override torque scale, fade down 0
-        else:
-          self.override_ramp = min(1.0, self.override_ramp + 0.01 / 1.5) # fade up 1.5s
-          
-        torque_cmd *= self.override_ramp
-    else:
-      self.override_ramp = 0.0
-      self.steering_pressed_filter_s = 0.0
-      self.steering_pressed_robust_prev = False
-    
-    self.lat_active_prev = CC.latActive
-    actuators.torque = torque_cmd
+    if self.vfn_override:
+      actuators.torque = self.apply_vfn_override(CC, CS, float(actuators.torque))
+
     # *** rate limit steer ***
     limited_torque = rate_limit(actuators.torque, self.last_torque, -self.params.STEER_DELTA_DOWN * DT_CTRL,
                                 self.params.STEER_DELTA_UP * DT_CTRL)

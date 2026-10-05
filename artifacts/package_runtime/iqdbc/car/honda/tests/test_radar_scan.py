@@ -467,7 +467,8 @@ class TestScanInterfaceGating:
     CP = self.build(CAR.HONDA_CIVIC_BOSCH)
     CP_IQ = CarInterface.get_params_iq(CP, CAR.HONDA_CIVIC_BOSCH, gen_empty_fingerprint(), [], False, False, False)
     ri = CarInterface.RadarInterface(CP, CP_IQ)
-    assert ri.scanner is not None
+    # routed to the Bosch-A decoder (same 80 CAN IDs and trigger frame as the scan)
+    assert ri.bosch_a_radar and ri.rcp is not None
     assert ri.trigger_msg == SWEEP_TRIGGER_ADDR
 
   def test_radar_interface_keeps_nidec_path(self):
@@ -477,7 +478,7 @@ class TestScanInterfaceGating:
     CP = self.build(CAR.HONDA_CIVIC)
     CP_IQ = CarInterface.get_params_iq(CP, CAR.HONDA_CIVIC, gen_empty_fingerprint(), [], False, False, False)
     ri = CarInterface.RadarInterface(CP, CP_IQ)
-    assert ri.scanner is None
+    assert not ri.bosch_a_radar
     assert ri.trigger_msg == 0x445
 
   def test_radar_interface_sleeps_when_unavailable(self):
@@ -487,4 +488,4 @@ class TestScanInterfaceGating:
     CP = self.build(CAR.HONDA_E)
     CP_IQ = CarInterface.get_params_iq(CP, CAR.HONDA_E, gen_empty_fingerprint(), [], False, False, False)
     ri = CarInterface.RadarInterface(CP, CP_IQ)
-    assert ri.scanner is None and ri.rcp is None
+    assert not ri.bosch_a_radar and ri.rcp is None

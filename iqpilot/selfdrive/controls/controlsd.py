@@ -67,13 +67,10 @@ class Controls(IQControlsLayer):
 
     self.CI = interfaces[self.CP.carFingerprint](self.CP, self.CP_IQ)
 
-    
-    self.turn_shaping = hasattr(self, 'LaC') and isinstance(self.LaC, LatControlHondaEps)
-    self.lat_delay_schedule = eps_lateral_delay_schedule(self.CP, self.params) if self.turn_shaping else None
     self.sm = messaging.SubMaster(['lateralDelay', 'vehicleParameters', 'lateralTorqueParameters', 'modelV2', 'selfdriveState',
                                    'extrinsicsCalibration', 'deviceMotion', 'longitudinalPlan', 'lateralManeuverPlan',
                                    'carState', 'carOutput', 'driverMonitoringState', 'onroadEvents',
-                                   'driverAssistance', 'lateralDelay'] + self.iq_sub_services,
+                                   'driverAssistance'] + self.iq_sub_services,
                                   poll='selfdriveState')
     self.pm = messaging.PubMaster(['carControl', 'controlsState', 'iqPerfTrace'] + self.iq_pub_services)
 
@@ -117,7 +114,7 @@ class Controls(IQControlsLayer):
     self.LaC: LatControl
     if self.CP.steerControlType in (car.CarParams.SteerControlType.angle, car.CarParams.SteerControlType.curvatureDEPRECATED):
       self.LaC = LatControlAngle(self.CP, self.CP_IQ, self.CI, DT_CTRL)
-    elif use_honda_eps_controller(self.CP, self.params):
+    elif use_honda_eps_controller(self.CP, self.CP_IQ, self.params):
       self.LaC = LatControlHondaEps(self.CP, self.CP_IQ, self.CI, DT_CTRL)
     elif self.CP.lateralTuning.which() == 'pid':
       self.LaC = LatControlPID(self.CP, self.CP_IQ, self.CI, DT_CTRL)
@@ -136,6 +133,10 @@ class Controls(IQControlsLayer):
           self.LaC = LatControlTorque(self.CP, self.CP_IQ, self.CI, DT_CTRL)
       else:
         self.LaC = LatControlTorque(self.CP, self.CP_IQ, self.CI, DT_CTRL)
+
+    # LatControlHondaEps (StarPilot PR 14): tell the model a per-car, speed-scheduled lateral delay instead of liveDelay
+    self.turn_shaping = isinstance(self.LaC, LatControlHondaEps)
+    self.lat_delay_schedule = eps_lateral_delay_schedule(self.CP, self.CP_IQ, self.params) if self.turn_shaping else None
 
   def _use_pq_torque(self) -> bool:
     try:
@@ -274,7 +275,7 @@ class Controls(IQControlsLayer):
 
     lat_accel_override = bool(CS.gasPressed) or bool(self.sm['iqState'].aol.active)
     self.desired_curvature, curvature_limited = clip_curvature(CS.vEgo, self.desired_curvature, new_desired_curvature, lp.roll, lat_accel_override)
-    if self.turn_shaping:
+    if self.lat_delay_schedule is not None:
       lat_delay_base = eps_lateral_delay(self.lat_delay_schedule, CS.vEgo, self.sm["lateralDelay"].lateralDelay)
     else:
       lat_delay_base = lateral_action_delay(self.params, self.CP, self.sm["lateralDelay"].lateralDelay)
