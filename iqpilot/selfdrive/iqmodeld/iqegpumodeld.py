@@ -29,7 +29,7 @@ from iqdbc.car.car_helpers import get_demo_car_params
 from iqpilot.common.params import Params
 from iqpilot.common.realtime import DT_MDL
 from iqpilot.common.swaglog import cloudlog
-from iqpilot.selfdrive.controls.lib.desire_helper import DesireHelper
+from iqpilot.selfdrive.controls.lib.action_engine import ActionEngine
 from iqpilot.system import sentry
 
 from iqpilot.common.steer_delay import lateral_action_delay
@@ -464,7 +464,7 @@ def main(demo: bool = False) -> None:
 
   parser = PhaseParser()
   memory = DrivePacketMemory()
-  desire_logic = DesireHelper()
+  desire_logic = ActionEngine()
   frame_meter = FrameDropMeter(20.0)
   warps = CalibrationAtlas()
   prev_action = log.ModelDataV2.Action()

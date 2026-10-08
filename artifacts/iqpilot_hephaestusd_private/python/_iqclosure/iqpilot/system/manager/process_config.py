@@ -185,7 +185,8 @@ def and_(*fns):
 procs = [
   NativeProcess("loggerd", "iqpilot/system/loggerd", ["./loggerd"], logging),
   NativeProcess("encoderd", "iqpilot/system/loggerd", ["./encoderd"], only_onroad),
-  NativeProcess("stream_encoderd", "iqpilot/system/loggerd", ["./encoderd", "--stream"], or_(notcar, livestream, sentry_recording)),
+  NativeProcess("stream_encoderd", "iqpilot/system/loggerd", ["./encoderd", "--stream"], or_(notcar, livestream, sentry_recording),
+                restart_if_crash=True),
   PythonProcess("logmessaged", "iqpilot.system.logmessaged", always_run, restart_if_crash=True),
 
   NativeProcess("camerad", "iqpilot/system/camerad", ["./camerad"], or_(driverview, livestream, sentry_recording), restart_if_crash=True),
@@ -235,7 +236,7 @@ procs = [
 
   # debug procs
   NativeProcess("bridge", "iqpilot/cereal/messaging", ["./bridge"], notcar),
-  PythonProcess("webrtcd", "iqpilot.system.webrtc.webrtcd", or_(iscar, livestream)),
+  PythonProcess("webrtcd", "iqpilot.system.webrtc.webrtcd", or_(iscar, livestream), restart_if_crash=True),
   PythonProcess("canlived", "iqpilot.konn3kt.canlive.canlived", canlive),
 ]
 

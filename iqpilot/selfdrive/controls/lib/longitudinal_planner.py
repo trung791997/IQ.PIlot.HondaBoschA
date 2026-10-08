@@ -349,8 +349,7 @@ class LongitudinalPlanner(LongitudinalPlannerIQ):
     output_a_target_mpc, output_should_stop_mpc = get_accel_from_plan(self.v_desired_trajectory, self.a_desired_trajectory, CONTROL_N_T_IDX,
                                                                         action_t=action_t, stopping_speed=self.stopping_speed)
 
-    accel_boost = self.accel_boost.update(sm['selfdriveState'].enabled, v_ego, sm['carState'].gasPressed)
-    output_a_target_e2e = sm['modelV2'].action.desiredAcceleration + accel_boost
+    output_a_target_e2e = sm['modelV2'].action.desiredAcceleration
 
     output_should_stop_e2e = sm['modelV2'].action.shouldStop
     output_a_target_e2e, output_should_stop_e2e = self.apply_e2e_stop_distance(sm, v_ego, output_a_target_e2e, output_should_stop_e2e)
@@ -376,6 +375,10 @@ class LongitudinalPlanner(LongitudinalPlannerIQ):
     self.a_cruise, cruise_should_stop = get_cruise_accel(e2e, v_cruise, v_ego, self.a_cruise,
                                                           steer_angle_without_offset, self.CP, self.dt,
                                                           accel_coast, self.allow_throttle)
+
+    model_limited = e2e and output_a_target_e2e < min(output_a_target_mpc, self.a_cruise) - 0.1
+    self.accel_boost.update(sm['selfdriveState'].enabled, v_ego, sm['carState'].gasPressed, model_limited)
+    output_a_target_e2e = self.accel_boost.apply(output_a_target_e2e)
 
     if self.distance_control.enabled:
       lateral_accel = v_ego ** 2 * steer_angle_without_offset * CV.DEG_TO_RAD / (self.CP.steerRatio * self.CP.wheelbase)

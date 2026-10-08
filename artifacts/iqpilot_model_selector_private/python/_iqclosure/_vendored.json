@@ -1,5 +1,7 @@
 [
+  "iqpilot.common.api",
   "iqpilot.common.api.base",
+  "iqpilot.common.api.comma_connect",
   "iqpilot.common.basedir",
   "iqpilot.common.gpio",
   "iqpilot.common.i2c",

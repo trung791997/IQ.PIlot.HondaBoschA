@@ -191,6 +191,8 @@ def _repo_private_source_module_name(private_module_name: str) -> str | None:
     return private_module_name.replace("iqpilot_private.konn3kt.hephaestus.", "konn3kt_private.hephaestus.", 1)
   if private_module_name.startswith("iqpilot_private.konn3kt.uploaderd.") or private_module_name == "iqpilot_private.konn3kt.uploaderd":
     return private_module_name.replace("iqpilot_private.konn3kt.uploaderd", "konn3kt_private.uploaderd", 1)
+  if private_module_name.startswith("iqpilot_private.konn3kt.registration.") or private_module_name == "iqpilot_private.konn3kt.registration":
+    return private_module_name.replace("iqpilot_private.konn3kt.registration", "konn3kt_private.registration", 1)
   if private_module_name.startswith("iqpilot_private.konn3kt.iqlvbs."):
     return private_module_name.replace("iqpilot_private.konn3kt.iqlvbs.", "konn3kt_private.iqlvbs.", 1)
   return None

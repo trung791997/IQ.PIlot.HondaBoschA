@@ -1,5 +1,7 @@
 [
+  "iqpilot.common.api",
   "iqpilot.common.api.base",
+  "iqpilot.common.api.comma_connect",
   "iqpilot.common.basedir",
   "iqpilot.common.gpio",
   "iqpilot.common.i2c",
@@ -15,6 +17,7 @@
   "iqpilot.selfdrive.iqmodeld.model_map_tile",
   "iqpilot.selfdrive.iqmodeld.models.fetcher",
   "iqpilot.selfdrive.iqmodeld.models.helpers",
+  "iqpilot.selfdrive.iqmodeld.models.iqc",
   "iqpilot.selfdrive.iqmodeld.speed_limit_input",
   "iqpilot.selfdrive.iqmodeld.temporal_state",
   "iqpilot.system.hardware",

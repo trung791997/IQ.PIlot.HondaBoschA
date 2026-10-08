@@ -23,7 +23,7 @@ from iqpilot.common.realtime import DT_MDL, config_realtime_process
 from iqpilot.common.swaglog import cloudlog
 from iqpilot.common.transformations.camera import DEVICE_CAMERAS
 from iqpilot.common.transformations.model import get_warp_matrix
-from iqpilot.selfdrive.controls.lib.desire_helper import DesireHelper
+from iqpilot.selfdrive.controls.lib.action_engine import ActionEngine
 from iqpilot.selfdrive.controls.lib.drive_helpers import (
   MODEL_SMOOTHING_MAX_TOTAL_SEC,
   dynamic_lat_smooth_extra_seconds,
@@ -580,7 +580,7 @@ class InferenceDaemon:
     self._car_params = self._load_car_params(demo)
     self._long_action_delay = self._car_params.longitudinalActuatorDelay + self._runtime.LONG_SMOOTH_SECONDS
     self._previous_action = log.ModelDataV2.Action()
-    self._desire_logic = DesireHelper()
+    self._desire_logic = ActionEngine()
     self._lat_smooth_extra_sec = 0.0
     self._drive_profile_state = DriveProfileState()
     self._memory_resets = MemoryResetTracker()

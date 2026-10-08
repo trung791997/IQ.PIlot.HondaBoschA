@@ -23,7 +23,7 @@ from iqpilot.common.realtime import DT_MDL, config_realtime_process
 from iqpilot.common.swaglog import cloudlog
 from iqpilot.common.transformations.camera import DEVICE_CAMERAS
 from iqpilot.common.transformations.model import get_warp_matrix
-from iqpilot.selfdrive.controls.lib.desire_helper import DesireHelper
+from iqpilot.selfdrive.controls.lib.action_engine import ActionEngine
 from iqpilot.selfdrive.controls.lib.drive_helpers import (
   MODEL_SMOOTHING_MAX_TOTAL_SEC,
   dynamic_lat_smooth_extra_seconds,
@@ -34,7 +34,7 @@ from iqpilot.selfdrive.locationd.calibration_helpers import get_calibrated_rpy
 from iqpilot.system import sentry
 
 from iqpilot.common.steer_delay import lateral_action_delay
-from iqpilot.selfdrive.iqmodeld.models.helpers import get_active_bundle
+from iqpilot.selfdrive.iqmodeld.models.helpers import get_active_bundle, load_default_model_session, forced_active_bundle
 from iqpilot.selfdrive.iqmodeld.models.inference_state import InferenceStateBase
 from iqpilot.selfdrive.iqmodeld.models.runners.model_runner import get_model_runner
 from iqpilot.selfdrive.iqmodeld.camera import CameraOffsetHelper
@@ -243,13 +243,30 @@ def _merged_plan(runtime_state: "NeuralEngineState", outputs: dict[str, np.ndarr
   return base_plan + (runtime_state.PLANPLUS_CONTROL * _planplus_gain(vehicle_speed)) * outputs["planplus"][0]
 
 
+def _set_default_fallback_alert(active: bool) -> None:
+  try:
+    from iqpilot.selfdrive.selfdrived.alertmanager import set_offroad_alert
+    set_offroad_alert("Offroad_ModelFallbackDefault", active)
+  except Exception:
+    cloudlog.exception("could not update the default-model fallback alert")
+
+
 class NeuralEngineState(InferenceStateBase):
   frames: dict[str, RoadProjector]
 
   def __init__(self, gpu_context: WarpContext):
     super().__init__()
-    runner = get_model_runner()
-    bundle = get_active_bundle()
+    try:
+      runner = get_model_runner()
+      bundle = get_active_bundle()
+      _set_default_fallback_alert(False)
+    except Exception:
+      cloudlog.exception("active model failed to load; running the default model this session so pose stays valid")
+      default_bundle = load_default_model_session()
+      with forced_active_bundle(default_bundle):
+        runner = get_model_runner()
+        bundle = get_active_bundle()
+      _set_default_fallback_alert(True)
 
     self.model_runner = runner
     self.constants = runner.constants
@@ -580,7 +597,7 @@ class InferenceDaemon:
     self._car_params = self._load_car_params(demo)
     self._long_action_delay = self._car_params.longitudinalActuatorDelay + self._runtime.LONG_SMOOTH_SECONDS
     self._previous_action = log.ModelDataV2.Action()
-    self._desire_logic = DesireHelper()
+    self._desire_logic = ActionEngine()
     self._lat_smooth_extra_sec = 0.0
     self._drive_profile_state = DriveProfileState()
     self._memory_resets = MemoryResetTracker()

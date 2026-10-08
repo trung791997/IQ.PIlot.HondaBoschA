@@ -31,7 +31,7 @@ def apply_ui_defaults(params) -> None:
   if bundle.get("brand") not in {"rivian", "tesla"}:
     params.put_bool("AolMainCruiseAllowed", True)
   for key, value in {
-    "OnroadScreenOffBrightness": 0, "IQLaneTurnValue": 19.0,
+    "OnroadScreenOffBrightness": 0, "IQLaneTurnValue": 20.0,
     "IQE2ESetSpeedMode": 1, "SLCPolicy": 1,
   }.items():
     if params.get(key, return_default=True) != value:

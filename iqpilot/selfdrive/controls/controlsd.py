@@ -198,6 +198,8 @@ class Controls(IQControlsLayer):
     if self.CP.lateralTuning.which() == 'torque' and hasattr(self.LaC, "update_live_torque_params"):
       torque_params = self.sm['lateralTorqueParameters']
       if self.sm.all_checks(['lateralTorqueParameters']) and torque_params.useParams:
+        if hasattr(self.LaC, "set_live_torque_valid"):
+          self.LaC.set_live_torque_valid(torque_params.valid)
         self.LaC.update_live_torque_params(torque_params.latAccelFactorFiltered, torque_params.latAccelOffsetFiltered,
                                            torque_params.frictionCoefficientFiltered)
 

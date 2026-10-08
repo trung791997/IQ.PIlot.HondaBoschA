@@ -82,8 +82,10 @@ class TogglesLayout(Widget):
       ),
       "IQGasOverrideBoost": (
         lambda: tr("Gas Override Boost"),
-        tr_noop("Off by default. Holding the gas above 10 mph while engaged slowly raises IQ.Pilot's acceleration by up to " +
-                "1.0 m/s², kept until you disengage; it bleeds off below 10 mph. Takes effect on the next drive."),
+        tr_noop("Off by default. When the end-to-end model limits acceleration, holding the gas above 10 mph while engaged " +
+                "adds up to 0.05 m/s² per press, at 0.025 m/s² per second, up to 0.2 m/s² total. " +
+                "Boost fades during stronger braking, bleeds off below 10 mph, and resets when you disengage. " +
+                "Takes effect on the next drive."),
         "disengage_on_accelerator.png",
         False,
       ),
