@@ -135,6 +135,9 @@ function launch {
 
   install_iq_command
 
+  # remote access first, so the device stays reachable even if an update or build below fails
+  "$DIR/iqpilot/system/hardware/tici/tailscale_start.sh" || true
+
   # Check to see if there's a valid overlay-based update available. Conditions
   # are as follows:
   #
