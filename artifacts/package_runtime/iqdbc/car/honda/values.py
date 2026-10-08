@@ -48,6 +48,9 @@ class CarControllerParams:
     assert CP.lateralParams.torqueV[0] == 0
     self.STEER_LOOKUP_BP = [v * -1 for v in CP.lateralParams.torqueBP][1:][::-1] + list(CP.lateralParams.torqueBP)
     self.STEER_LOOKUP_V = [v * -1 for v in CP.lateralParams.torqueV][1:][::-1] + list(CP.lateralParams.torqueV)
+    if CP.carFingerprint == CAR.HONDA_CIVIC_BOSCH:
+      # StarPilot's Civic Bosch gas lookup; the gas learner's factor (gas_learner.py) is fitted against it
+      self.BOSCH_GAS_LOOKUP_V = [0, 750]
 
 
 class HondaSafetyFlags(IntFlag):

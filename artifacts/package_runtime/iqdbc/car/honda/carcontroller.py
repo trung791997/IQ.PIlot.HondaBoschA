@@ -5,6 +5,8 @@ from iqdbc.can import CANPacker
 from iqdbc.car import ACCELERATION_DUE_TO_GRAVITY, Bus, DT_CTRL, rate_limit, make_tester_present_msg, structs
 from iqdbc.car.common.pid import PIDController
 from iqdbc.car.honda import dash_lane, dash_objects, hondacan
+from iqdbc.car.honda.gas_learner import CIVIC_BOSCH_HILL_GAS_GAIN, CIVIC_BOSCH_PITCH_BIAS, LongGasLearner, \
+                                       bosch_gas_lookup_accel, load_gas_learner, save_gas_learner, update_honda_bosch_braking
 from iqdbc.car.honda.values import CAR, CruiseButtons, CruiseSettings, HONDA_BOSCH, HONDA_BOSCH_CANFD, HONDA_BOSCH_RADARLESS, \
                                      HONDA_BOSCH_TJA_CONTROL, HONDA_NIDEC_ALT_PCM_ACCEL, CarControllerParams
 from iqdbc.car.interfaces import CarControllerBase
@@ -190,6 +192,10 @@ class CarController(CarControllerBase, AolCarController, GasInterceptorCarContro
     self.windfactor_before_maxgas = 1.0
     self.windfactor_before_brake = 0.0
     self.pitch = 0.0
+    # Bosch: StarPilot's LongGasLearner (gas_learner.py), persisted across drives; the factors above stay the
+    # gas-interceptor path's
+    self.gas_learner = LongGasLearner(*load_gas_learner(CP.carFingerprint), CP.carFingerprint) if CP.carFingerprint in HONDA_BOSCH else None
+    self.bosch_braking = False
 
     self.brake_pid = PIDController(k_p=0.0, k_i=1.0, pos_limit=0.0, neg_limit=-2.0, rate=50)
     self.brake_pid.reset()
@@ -395,47 +401,46 @@ class CarController(CarControllerBase, AolCarController, GasInterceptorCarContro
           # low-speed extra brake: the fixed accel command under-delivers approaching a stop, so an
           # integral-only term closes the gap, releasing at 1 m/s^3 once out of the window
           if (accel < min_gas) and (CS.out.vEgo < 3.0) and not (-1e-3 < CS.out.vEgo < 1e-3):
-            brake_addon = self.brake_pid.update(error=accel - CS.out.aEgo, speed=CS.out.vEgo)
-            target_accel = min(accel, accel + brake_addon)
+            target_accel = min(accel, accel + self.brake_pid.update(error=accel - CS.out.aEgo, speed=CS.out.vEgo))
           else:
             if (self.brake_pid.i < 0.0) and (accel < min_gas):
               self.brake_pid.i = min(0.0, self.brake_pid.i + 0.02)
             else:
               self.brake_pid.reset()
             target_accel = min(accel, accel + self.brake_pid.i)
+          brake_addon = target_accel - accel  # gates the gas learner
 
           if self.CP.carFingerprint == CAR.HONDA_CIVIC_BOSCH:
             target_accel += bosch_overbrake_compensation(accel, actuators.longControlState == LongCtrlState.stopping)
           self.accel = float(np.clip(target_accel, self.params.BOSCH_ACCEL_MIN, self.params.BOSCH_ACCEL_MAX))
           # not using self.accel since the brake pid resets with the gas pedal
-          gas_pedal_force = accel + wind_brake_ms2 * self.windfactor + hill_brake
+          gas_pedal_force = accel + wind_brake_ms2 * self.gas_learner.windfactor + hill_brake
 
-          # Live-learn gas pedal adjustments when openpilot is controlling gas.
-          if (actuators.longControlState == LongCtrlState.pid) and (not CS.out.gasPressed):
-            gas_error = accel - CS.out.aEgo
-            if gas_error != 0.0 and gas_pedal_force > min_gas:
-              if self.CP.carFingerprint in (CAR.HONDA_INSIGHT, CAR.HONDA_CIVIC_BOSCH):  # gas pedal reacts too slowly
-                learn_speed = 150
-              elif self.CP.carFingerprint == CAR.ACURA_RDX_3G:  # prevent overreacting to turbo lag
-                learn_speed = 300
-              else:
-                learn_speed = 50
-              self.gasfactor = np.clip(self.gasfactor + gas_error / learn_speed * (gas_pedal_force - min_gas), 0.01, 3.0)
-            if gas_error != 0.0 and (not CS.out.brakePressed) and (CS.out.vEgo > 0.0):
-              wind_learn_speed = 100 if self.CP.carFingerprint == CAR.ACURA_RDX_3G else 1000
-              wind_adjust = 1 + wind_brake_ms2 / wind_learn_speed
-              self.windfactor = np.clip(self.windfactor * (wind_adjust if (gas_error > 0) else 1.0 / wind_adjust), 0.1, 3.0)
-            if gas_pedal_force <= min_gas:
-              self.windfactor = max(self.windfactor, self.windfactor_before_brake)
-            else:
-              self.windfactor_before_brake = self.windfactor
-            if gas_pedal_force >= self.params.BOSCH_ACCEL_MAX:
-              self.gasfactor = min(self.gasfactor, self.gasfactor_before_maxgas)
-              self.windfactor = min(self.windfactor, self.windfactor_before_maxgas)
-            else:
-              self.gasfactor_before_maxgas = self.gasfactor
-              self.windfactor_before_maxgas = self.windfactor
-          self.gas = float(np.interp((gas_pedal_force - min_gas) * self.gasfactor + min_gas,
+          # StarPilot LongGasLearner: lag-aligned (0.5 s) and quasi-steady gated, frozen on hills and while the extra
+          # brake is working, soft-clamped toward 1.0
+          self.gas_learner.update(
+            accel_cmd=accel,
+            a_ego=CS.out.aEgo,
+            gas_pedal_force=gas_pedal_force,
+            wind_brake_ms2=wind_brake_ms2,
+            long_active=CC.longActive,
+            long_pid=actuators.longControlState == LongCtrlState.pid,
+            gas_pressed=CS.out.gasPressed,
+            brake_pressed=CS.out.brakePressed,
+            v_ego=CS.out.vEgo,
+            at_standstill=CS.out.vEgo <= 0.0,
+            pitch=self.pitch,
+            brake_addon=float(brake_addon),
+            at_accel_max=gas_pedal_force >= self.params.BOSCH_ACCEL_MAX,
+          )
+
+          # gasfactor scales the flat-road request only; the hill term is added outside it, with the Civic hill gain
+          # about its pitch bias
+          civic = self.CP.carFingerprint == CAR.HONDA_CIVIC_BOSCH
+          hill_gain = CIVIC_BOSCH_HILL_GAS_GAIN if civic else 1.0
+          hill_level = math.sin(CIVIC_BOSCH_PITCH_BIAS) * ACCELERATION_DUE_TO_GRAVITY if civic else 0.0
+          self.gas = float(np.interp(bosch_gas_lookup_accel(gas_pedal_force, hill_brake, self.gas_learner.gasfactor, min_gas,
+                                                            hill_gain, hill_level),
                                      self.params.BOSCH_GAS_LOOKUP_BP, self.params.BOSCH_GAS_LOOKUP_V))
 
           # limit gas ramp to 60 units per frame, matches stock; higher sometimes makes the powertrain ignore the command
@@ -444,12 +449,15 @@ class CarController(CarControllerBase, AolCarController, GasInterceptorCarContro
           self.bosch_last_gas = self.gas
 
           stopping = actuators.longControlState == LongCtrlState.stopping
+          # brake mode with StarPilot's hysteresis on the road-load-adjusted force, instead of flipping at min_gas
+          self.bosch_braking = update_honda_bosch_braking(self.bosch_braking, gas_pedal_force, stopping, CC.longActive)
           self.stopping_counter = self.stopping_counter + 1 if stopping else 0
           # CAN FD: never overlap the stock radar's own ACC_CONTROL stream; ours starts within a few
           # frames of the radar going silent (see the deferred radar disable above)
           if not (self.CP.carFingerprint in HONDA_BOSCH_CANFD and CS.stock_acc_alive):
             can_sends.extend(hondacan.create_acc_commands(self.packer, self.CAN, CC.enabled, CC.longActive, self.accel, self.gas,
-                                                          self.stopping_counter, self.CP, gas_pedal_force))
+                                                          self.stopping_counter, self.CP, gas_pedal_force,
+                                                          braking=self.bosch_braking))
         else:
           apply_brake = np.clip(self.brake_last - wind_brake, 0.0, 1.0)
           apply_brake = int(np.clip(apply_brake * self.params.NIDEC_BRAKE_MAX, 0, self.params.NIDEC_BRAKE_MAX - 1))
@@ -569,6 +577,9 @@ class CarController(CarControllerBase, AolCarController, GasInterceptorCarContro
                                                      CS.scm_ambient_light, self.CP.carFingerprint, bus=self.CAN.camera))
 
     # Finalize actuator state for downstream consumers
+    if self.gas_learner is not None and self.frame > 0 and self.frame % 6000 == 0:
+      save_gas_learner(self.gas_learner)
+
     new_actuators = actuators.as_builder()
     new_actuators.speed = self.speed
     new_actuators.accel = self.accel
