@@ -10,7 +10,7 @@ from iqdbc.car.honda.values import CarControllerParams, HondaFlags, CAR, HONDA_B
 from iqdbc.car.honda.carcontroller import CarController
 from iqdbc.car.honda.carstate import CarState
 from iqdbc.car.honda.radar_interface import RadarInterface
-from iqdbc.car.honda.steer_ratio import get_honda_vgr_profile, HONDA_VGR_PROFILE_FLAGS
+from iqdbc.car.honda.steer_ratio import get_honda_vgr_profile, normalize_honda_eps_fw, HONDA_VGR_PROFILE_FLAGS
 from iqdbc.car.interfaces import CarInterfaceBase
 
 from iqdbc.lvbs.car.honda.iq_values import HondaFlagsIQ, HondaSafetyFlagsIQ
@@ -310,8 +310,18 @@ class CarInterface(CarInterfaceBase):
 
     elif candidate in (CAR.HONDA_CIVIC_BOSCH, CAR.HONDA_CIVIC_BOSCH_DIESEL):
       if ret.flags & HondaFlagsIQ.EPS_MODIFIED:
-        stock_cp.lateralParams.torqueBP, stock_cp.lateralParams.torqueV = [[0, 2564, 8000], [0, 2564, 3840]]
-        stock_cp.lateralTuning.pid.kpV, stock_cp.lateralTuning.pid.kiV = [[0.3], [0.09]]  # 2.5x Modded EPS
+        # StarPilot's NRDR modified-EPS Bosch tune, which LatControlHondaEps (JamesL787 PRs 14/17) was validated with:
+        # the controller takes these gains as-is, and CIVIC_BOSCH_C020's feedforward assumes the identity [0, 4096]
+        # torque map (e4_per_output 4096). The old [0, 2564, 8000] map sent ~2x torque for small commands and the
+        # flat 0.3/0.09 gains were 5-17x StarPilot's P.
+        bp = [0., 25. * CV.MPH_TO_MS - 1e-3, 25. * CV.MPH_TO_MS, 50. * CV.MPH_TO_MS]
+        stock_cp.lateralTuning.pid.kpBP, stock_cp.lateralTuning.pid.kpV = [bp, [0.018, 0.024, 0.048, 0.060]]
+        stock_cp.lateralTuning.pid.kiBP, stock_cp.lateralTuning.pid.kiV = [bp, [0.006, 0.008, 0.016, 0.020]]
+        stock_cp.lateralTuning.pid.kf = 3.6e-6
+        stock_cp.lateralParams.torqueBP, stock_cp.lateralParams.torqueV = [[0, 4096], [0, 4096]]
+        if any(fw.ecu == "eps" and normalize_honda_eps_fw(fw.fwVersion) == "39990-TBA-C120" for fw in car_fw):
+          # C120 linear-max image: the modded table ramps linearly to the 3840 firmware cap
+          stock_cp.lateralParams.torqueBP, stock_cp.lateralParams.torqueV = [[0, 3840], [0, 3840]]
 
     elif candidate == CAR.HONDA_CIVIC_2022:
       if ret.flags & HondaFlagsIQ.EPS_MODIFIED:

@@ -130,8 +130,9 @@ def get_eps_modified_steering_pressed(
 
 
 # StarPilot's NrdrLatVfnOverride, baked in on for modified-EPS cars: fade the command to 0 at once on a press, back up
-# over this long once released.
-VFN_OVERRIDE_FADE_UP_S = 1.5
+# over this long once released. 1.0 s is the owner's StarPilot HondaOverrideFadeUpSecs as read off the device on
+# 2026-10-08 (StarPilot's default is 1.5).
+VFN_OVERRIDE_FADE_UP_S = 1.0
 
 
 class CarController(CarControllerBase, AolCarController, GasInterceptorCarController):
@@ -144,6 +145,10 @@ class CarController(CarControllerBase, AolCarController, GasInterceptorCarContro
 
     # vfn override policy (StarPilot NrdrLatVfnOverride), always on for a modified EPS (the LatControlHondaEps cars)
     self.vfn_override = bool(CP_IQ.flags & HondaFlagsIQ.EPS_MODIFIED)
+    # StarPilot's steer-delta limiter (HondaSteerDeltaLimiter) defaults off, and LatControlHondaEps was tuned without it:
+    # the slew added lag and, read by controlsd as safety limiting, froze the controller's integrator. The LatControlHondaEps
+    # cars (modified-EPS Clarity / Civic Bosch) send the command unslewed; every other Honda keeps STEER_DELTA_UP/DOWN.
+    self.steer_delta_limiter = not (self.vfn_override and CP.carFingerprint in (CAR.HONDA_CLARITY, CAR.HONDA_CIVIC_BOSCH))
     self.steering_pressed_filter_s = 0.0
     self.steering_pressed_robust_prev = False
     self.override_ramp = 1.0
@@ -243,8 +248,11 @@ class CarController(CarControllerBase, AolCarController, GasInterceptorCarContro
       torque_cmd = self.apply_vfn_override(CC, CS, torque_cmd)
 
     # *** rate limit steer ***
-    limited_torque = rate_limit(torque_cmd, self.last_torque, -self.params.STEER_DELTA_DOWN * DT_CTRL,
-                                self.params.STEER_DELTA_UP * DT_CTRL)
+    if self.steer_delta_limiter:
+      limited_torque = rate_limit(torque_cmd, self.last_torque, -self.params.STEER_DELTA_DOWN * DT_CTRL,
+                                  self.params.STEER_DELTA_UP * DT_CTRL)
+    else:
+      limited_torque = torque_cmd
     self.last_torque = limited_torque
 
     # *** apply brake hysteresis ***

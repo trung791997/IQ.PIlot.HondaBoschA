@@ -23,6 +23,7 @@ from iqpilot.selfdrive.controls.lib.latcontrol_angle import LatControlAngle, STE
 from iqpilot.selfdrive.controls.lib.latcontrol_torque import LatControlTorque
 from iqpilot.selfdrive.controls.lib.latcontrol_torque_pq import LatControlTorquePQ
 from iqpilot.selfdrive.controls.lib.latcontrol_torque_v0 import LatControlTorqueV0, is_vw_mqb_torque
+from iqpilot.selfdrive.controls.lib.model_action_interp import ModelActionInterp
 from iqpilot.selfdrive.controls.lib.latcontrol_honda_eps import LatControlHondaEps, use_honda_eps_controller, eps_lateral_delay, eps_lateral_delay_schedule
 from iqpilot.selfdrive.controls.lib.longcontrol import LongControl
 from iqpilot.selfdrive.controls.steering_fault_recovery import SteeringFaultRecovery
@@ -137,6 +138,8 @@ class Controls(IQControlsLayer):
     # LatControlHondaEps (StarPilot PR 14): tell the model a per-car, speed-scheduled lateral delay instead of liveDelay
     self.turn_shaping = isinstance(self.LaC, LatControlHondaEps)
     self.lat_delay_schedule = eps_lateral_delay_schedule(self.CP, self.CP_IQ) if self.turn_shaping else None
+    # StarPilot NrdrLatModelActionInterp (default on there): ramp the 20 Hz model action, for LatControlHondaEps
+    self.model_action_interp = ModelActionInterp() if self.turn_shaping else None
 
   def _use_pq_torque(self) -> bool:
     try:
@@ -266,6 +269,10 @@ class Controls(IQControlsLayer):
       model_v2, CC.latActive, self.curvature, maneuver_curvature,
       self.curvature_lookahead_enabled, self.LaC.supports_legacy_curvature_lookahead,
     )
+
+    if self.model_action_interp is not None:
+      new_desired_curvature = self.model_action_interp.update(new_desired_curvature, self.sm.updated['modelV2'],
+                                                              CC.latActive and maneuver_curvature is None)
 
     self.smooth_steer_inactive_frames = 0 if CC.latActive else self.smooth_steer_inactive_frames + 1
     if self.is_curvature_car and self.enable_smooth_steer and self.smooth_steer_inactive_frames < SMOOTH_STEER_HOLD_FRAMES:
