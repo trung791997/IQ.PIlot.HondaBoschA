@@ -8,8 +8,10 @@ from iqdbc.can.parser import get_raw_value
 from iqdbc.car.can_definitions import CanData
 from iqdbc.car.honda.hondacan import CanBus
 from iqdbc.car.honda.interface import CarInterface
+from iqdbc.car.honda import radar_interface as radar_interface_module
 from iqdbc.car.honda.radar_interface import (
   BOSCH_A_REANCHOR_MIN_SPAN_S,
+  BOSCH_A_REANCHOR_WINDOW,
   BOSCH_A_AZIMUTH_SCALE_RAD,
   BOSCH_A_AUX_IDS,
   BOSCH_A_DBC_NAME,
@@ -37,6 +39,7 @@ from iqdbc.car.honda.radar_interface import (
   _bosch_a_main_base,
   _bosch_a_range_ratio,
   _bosch_a_range_ratio_vrel,
+  bosch_a_range_offset_m,
 )
 from iqdbc.car.honda.values import CAR
 
@@ -694,20 +697,24 @@ class TestU11Scale72:
     assert _bosch_a_direct_vrel_interval(inside) == (inside, inside)
 
 
-class TestRangeOffset:
-  """D-076, baked in: the firmware fallback -335/128 m, nothing else moves."""
+class TestRangeOffsetFirmwareDefault:
+  """D-076: fixed firmware ROM-default offset per car, -335/128 Civic and -341/128 CR-V. No toggle, no CAN 0x669."""
 
-  def test_constant(self):
-    assert BOSCH_A_RANGE_OFFSET_M == -2.6171875
+  def test_constants(self):
+    assert BOSCH_A_RANGE_OFFSET_M == -335.0 / 128.0 == -2.6171875
+    assert bosch_a_range_offset_m(CAR.HONDA_CIVIC_BOSCH) == -2.6171875
+    assert bosch_a_range_offset_m(CAR.HONDA_CRV_5G) == -2.6640625
+    assert bosch_a_range_offset_m(CAR.HONDA_CRV_HYBRID) == -2.6640625
+    assert bosch_a_range_offset_m() == -2.6171875
 
-  def test_dRel_uses_it(self):
+  def test_interface_uses_the_cars_offset(self):
+    assert make_radar_interface().range_offset_m == -2.6171875
+
+  def test_0x669_is_not_a_parser_message(self):
+    # A required 0x669 would raise canError whenever the camera does not send it.
     ri = make_radar_interface()
-    assert ri.range_offset_m == BOSCH_A_RANGE_OFFSET_M
-    ri.update(sweep(0, 0, 0x7, 1000, 1024, 1, 0))
-    rr = ri.update(sweep(0, 1, 0x7, 1000, 1024, 3, 50_000_000, with_aux=True,
-                         direct_vrel_raw=864, direct_vrel_uncertainty_raw=0))
-    assert rr.points[0].dRel == pytest.approx(1000 / 16 - 2.6171875)
-
+    assert 0x669 not in ri.rcp.message_states
+    assert not hasattr(radar_interface_module, "bosch_a_range_offset_fallback_enabled")
 
 class TestVrel:
   def test_direct_aux_vrel_is_preferred_over_range_derivative(self):
@@ -1205,7 +1212,8 @@ class TestLastingCleanStepReAnchors:
     assert (published_at - 6) * self.DT_NANOS * 1e-9 >= BOSCH_A_REANCHOR_MIN_SPAN_S
     assert (published_at - 6) * self.DT_NANOS * 1e-9 <= BOSCH_A_REANCHOR_MIN_SPAN_S + 0.15
 
-  @pytest.mark.parametrize("sigma,existence", [(7, 126), (1, 0)])
+  # Range sigma 20 is above the D-089 range-scaled limit at ~94 m (0.15 x 94 = 14.1), so it stays degraded.
+  @pytest.mark.parametrize("sigma,existence", [(20, 126), (1, 0)])
   def test_negative_control_a_degraded_lasting_step_never_re_anchors(self, sigma, existence):
     ri = make_radar_interface()
     raw = self._birth(ri) - 136
@@ -1213,6 +1221,47 @@ class TestLastingCleanStepReAnchors:
       raw -= self.CLOSING_RAW
       rr = self._drive(ri, i, raw, -2.0, sigma=sigma, existence=existence)
       assert not any(p.measured for p in rr.points)
+
+  def test_a_clean_step_re_anchors_without_the_recovered_flag(self):
+    ri = make_radar_interface()
+    raw = self._birth(ri) - 136
+    for i in range(6, 60):
+      raw -= self.CLOSING_RAW
+      rr = self._drive(ri, i, raw, -2.0)
+      if rr.points and rr.points[0].measured:
+        assert rr.points[0].recovered is False
+
+  def test_d089_far_step_with_range_scaled_sigma_re_anchors_flagged_recovered(self):
+    # Sigma 7 at ~94 m: degraded by BOSCH_A_RANGE_SIGMA_DEGRADED_RAW (4), clean by the range-scaled limit (14.1).
+    # Before D-089 this lead stayed dark (the old negative control); now it comes back flagged for radard's checks.
+    ri = make_radar_interface()
+    raw = self._birth(ri) - 136
+    published = []
+    for i in range(6, 60):
+      raw -= self.CLOSING_RAW
+      rr = self._drive(ri, i, raw, -2.0, sigma=7)
+      if rr.points and rr.points[0].measured:
+        published.append(rr.points[0].recovered)
+    assert published and all(published)
+
+  def test_d089_recovered_flag_clears_after_a_window_of_strictly_clean_sweeps(self):
+    ri = make_radar_interface()
+    raw = self._birth(ri) - 136
+    i = 6
+    while True:
+      raw -= self.CLOSING_RAW
+      rr = self._drive(ri, i, raw, -2.0, sigma=7)
+      i += 1
+      if rr.points and rr.points[0].measured:
+        break
+    assert rr.points[0].recovered is True
+    flags = []
+    for j in range(i, i + BOSCH_A_REANCHOR_WINDOW + 2):
+      raw -= self.CLOSING_RAW
+      rr = self._drive(ri, j, raw, -2.0, sigma=1)
+      flags.append(rr.points[0].recovered)
+    assert flags[:BOSCH_A_REANCHOR_WINDOW - 1] == [True] * (BOSCH_A_REANCHOR_WINDOW - 1)
+    assert flags[BOSCH_A_REANCHOR_WINDOW - 1:] == [False] * 3
 
   def test_negative_control_a_clean_step_that_contradicts_u11_never_re_anchors(self):
     ri = make_radar_interface()

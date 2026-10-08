@@ -403,6 +403,11 @@ struct RadarData @0x888ad6581cf0aacb {
     # means "not provided": every other radar. radard gates only NEW onpath adoption on its window median.
     existence @14 :Float32 = -1.0;
 
+    # Honda Bosch-A only (D-089; StarPilot recovered @11): the point's range anchor came from a far-range D-057 re-anchor
+    # that only the range-scaled sigma window allowed (BOSCH_A_REANCHOR_RECOVER_SIGMA_FRAC). radard uses it only while
+    # the camera and the point's own range slope agree. False (the default) on every other radar and in older logs.
+    recovered @15 :Bool;
+
     enum RadarSource {
       frontRadar @0;
       scc @1;
