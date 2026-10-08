@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import math
+import os
 import numpy as np
 
 import iqpilot.cereal.messaging as messaging
@@ -135,7 +136,25 @@ def get_accel_candidates(e2e, has_lead, mpc_candidate, cruise_candidate, e2e_can
 
 
 
-STOCK_BRAKE_FEEL = True
+# D-086 StockBrakeFeel: off by default (owner, 2026-10-08: still being tuned on StarPilot). Opt in per device with the
+# IQStockBrakeFeel flag file, read once per planner start. The key is not in the prebuilt params binary's key list, so it
+# is read straight from the params directory and has no settings toggle: on the device,
+#   echo -n 1 > /data/params/d/IQStockBrakeFeel     (off: rm /data/params/d/IQStockBrakeFeel)
+STOCK_BRAKE_FEEL = False
+STOCK_BRAKE_FEEL_PARAM = "IQStockBrakeFeel"
+
+
+def stock_brake_feel_enabled() -> bool:
+  try:
+    return Params().get_bool(STOCK_BRAKE_FEEL_PARAM)
+  except UnknownKeyName:
+    pass
+  try:
+    from iqpilot.system.hardware.hw import Paths
+    with open(os.path.join(Paths.params(), os.environ.get("OPENPILOT_PREFIX", "d"), STOCK_BRAKE_FEEL_PARAM)) as f:
+      return f.read().strip().lower() in ("1", "true", "yes")
+  except OSError:
+    return STOCK_BRAKE_FEEL
 STOCK_FEEL_DEPTH_BP = [2.0, 2.25, 2.75, 3.5, 4.5, 5.5, 6.5, 7.5, 9.0, 11.0, 13.5, 17.5, 25.0]  # s
 STOCK_FEEL_DEPTH_V = [-3.5, -3.2, -2.4, -2.3, -2.3, -2.1, -1.7, -1.6, -1.28, -1.09, -0.88, -0.74, -0.35]  # m/s^2
 STOCK_FEEL_JERK_BP = [2.0, 2.5, 6.0, 10.0]  # s
@@ -244,8 +263,8 @@ class LongitudinalPlanner(LongitudinalPlannerIQ):
     except UnknownKeyName:
       distance_control_enabled = False
     self.distance_control = E2EDistanceController(distance_control_enabled, dt)
-    # D-086 StockBrakeFeel: StarPilot's toggle (default off there), baked in on here (owner, 2026-10-05)
-    self.stock_brake_feel = STOCK_BRAKE_FEEL
+    # D-086 StockBrakeFeel: off unless the IQStockBrakeFeel flag is set (see STOCK_BRAKE_FEEL)
+    self.stock_brake_feel = stock_brake_feel_enabled()
     self.brake_release_rise_ticks = BRAKE_RELEASE_DWELL_TICKS + 1
     try:
       accel_boost_enabled = Params().get_bool("IQGasOverrideBoost")
